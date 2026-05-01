@@ -22,7 +22,8 @@ class PosterCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final imageUrl =
         item.externalPosterUrl ?? ApiConfig.poster(item.posterPath);
-    final cardWidth = width ?? TvLayout.posterWidthFor(MediaQuery.sizeOf(context));
+    final cardWidth =
+        width ?? TvLayout.posterWidthFor(MediaQuery.sizeOf(context));
     return SizedBox(
       width: cardWidth,
       child: FocusableScale(

@@ -641,7 +641,7 @@ class _MovieDetailsScreen extends StatelessWidget {
                   child: Padding(
                     padding: EdgeInsets.fromLTRB(
                       horizontalInset,
-                      (size.height * .055).clamp(28.0, 48.0),
+                      (size.height * .055).clamp(28.0, 48.0).toDouble(),
                       horizontalInset,
                       20,
                     ),
@@ -814,8 +814,10 @@ class _MovieActionButton extends StatelessWidget {
       scale: 1.025,
       onPressed: onPressed,
       child: Container(
-        height: (50 * scale).clamp(46.0, 54.0),
-        padding: EdgeInsets.symmetric(horizontal: (23 * scale).clamp(20, 26)),
+        height: (50 * scale).clamp(46.0, 54.0).toDouble(),
+        padding: EdgeInsets.symmetric(
+          horizontal: (23 * scale).clamp(20.0, 26.0).toDouble(),
+        ),
         decoration: BoxDecoration(
           color: primary ? WenaTheme.red : Colors.black.withValues(alpha: .38),
           borderRadius: BorderRadius.circular(9),
@@ -836,12 +838,12 @@ class _MovieActionButton extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: (21 * scale).clamp(19, 23)),
-            SizedBox(width: (10 * scale).clamp(9, 12)),
+            Icon(icon, size: (21 * scale).clamp(19.0, 23.0).toDouble()),
+            SizedBox(width: (10 * scale).clamp(9.0, 12.0).toDouble()),
             Text(
               label,
               style: TextStyle(
-                fontSize: (15.5 * scale).clamp(14.0, 17.0),
+                fontSize: (15.5 * scale).clamp(14.0, 17.0).toDouble(),
                 fontWeight: FontWeight.w900,
               ),
             ),
@@ -939,7 +941,7 @@ class _MovieCastSection extends StatelessWidget {
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
     final size = MediaQuery.sizeOf(context);
-    final rowHeight = (size.height * .125).clamp(82.0, 96.0);
+    final rowHeight = (size.height * .125).clamp(82.0, 96.0).toDouble();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -972,9 +974,9 @@ class _CastCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final imageUrl = ApiConfig.poster(member.profilePath, size: 'w185');
     final size = MediaQuery.sizeOf(context);
-    final cardWidth = (size.width * .235).clamp(220.0, 270.0);
-    final cardHeight = (size.height * .125).clamp(82.0, 96.0);
-    final imageWidth = (cardHeight * .92).clamp(74.0, 88.0);
+    final cardWidth = (size.width * .235).clamp(220.0, 270.0).toDouble();
+    final cardHeight = (size.height * .125).clamp(82.0, 96.0).toDouble();
+    final imageWidth = (cardHeight * .92).clamp(74.0, 88.0).toDouble();
     return SizedBox(
       width: cardWidth,
       child: FocusableScale(
@@ -1066,7 +1068,7 @@ class _MovieLandscapeRecommendations extends StatelessWidget {
   Widget build(BuildContext context) {
     final displayItems = items.isEmpty ? _fallbackRecommendations() : items;
     final size = MediaQuery.sizeOf(context);
-    final rowHeight = (size.height * .17).clamp(104.0, 128.0);
+    final rowHeight = (size.height * .17).clamp(104.0, 128.0).toDouble();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1100,10 +1102,9 @@ class _MovieLandscapeCard extends StatelessWidget {
     final imageUrl =
         item.externalBackdropUrl ??
         ApiConfig.backdrop(item.backdropPath, size: 'w780');
-    final cardWidth = (MediaQuery.sizeOf(context).width * .20).clamp(
-      190.0,
-      230.0,
-    );
+    final cardWidth = (MediaQuery.sizeOf(context).width * .20)
+        .clamp(190.0, 230.0)
+        .toDouble();
     return SizedBox(
       width: cardWidth,
       child: FocusableScale(
@@ -1339,7 +1340,7 @@ class _SeriesDetailsScreen extends StatelessWidget {
                   child: Padding(
                     padding: EdgeInsets.fromLTRB(
                       horizontalInset,
-                      (size.height * .05).clamp(26.0, 44.0),
+                      (size.height * .05).clamp(26.0, 44.0).toDouble(),
                       horizontalInset,
                       18,
                     ),
@@ -1595,7 +1596,7 @@ class _SeriesEpisodeList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final seasonHeight = (size.height * .078).clamp(40.0, 46.0);
+    final seasonHeight = (size.height * .078).clamp(40.0, 46.0).toDouble();
     final seasons = List.generate(
       (item.totalSeasons ?? selectedSeason).clamp(1, 30),
       (index) => index + 1,
@@ -1622,7 +1623,7 @@ class _SeriesEpisodeList extends StatelessWidget {
         const SizedBox(height: 10),
         if (loading)
           SizedBox(
-            height: (size.height * .26).clamp(150.0, 210.0),
+            height: (size.height * .26).clamp(150.0, 210.0).toDouble(),
             child: Center(
               child: CircularProgressIndicator(color: WenaTheme.red),
             ),
@@ -1670,7 +1671,7 @@ class _SeriesSeasonButton extends StatelessWidget {
       scale: 1.025,
       onPressed: onPressed,
       child: Container(
-        width: (132 * scale).clamp(118.0, 150.0),
+        width: (132 * scale).clamp(118.0, 150.0).toDouble(),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected ? WenaTheme.red : Colors.black.withValues(alpha: .28),
@@ -1711,9 +1712,9 @@ class _SeriesEpisodeRow extends StatelessWidget {
         ? ''
         : ApiConfig.backdrop(episode.stillPath, size: 'w500');
     final size = MediaQuery.sizeOf(context);
-    final rowHeight = (size.height * .20).clamp(104.0, 126.0);
-    final thumbWidth = (rowHeight * 1.72).clamp(170.0, 196.0);
-    final thumbHeight = (thumbWidth * 9 / 16).clamp(96.0, 110.0);
+    final rowHeight = (size.height * .20).clamp(104.0, 126.0).toDouble();
+    final thumbWidth = (rowHeight * 1.72).clamp(170.0, 196.0).toDouble();
+    final thumbHeight = (thumbWidth * 9 / 16).clamp(96.0, 110.0).toDouble();
     return FocusableScale(
       borderRadius: 10,
       scale: 1.012,

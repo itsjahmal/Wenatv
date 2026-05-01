@@ -371,10 +371,9 @@ class _HeroContent extends ConsumerWidget {
     return Positioned(
       left: contentInset,
       top: (compact ? 30 : 42) + yOffset,
-      width: (viewportSize.width - (contentInset * 2)).clamp(
-        compact ? 430.0 : 500.0,
-        compact ? 580.0 : 660.0,
-      ),
+      width: (viewportSize.width - (contentInset * 2))
+          .clamp(compact ? 430.0 : 500.0, compact ? 580.0 : 660.0)
+          .toDouble(),
       child: IgnorePointer(
         ignoring: collapse > .35,
         child: AnimatedOpacity(

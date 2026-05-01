@@ -27,21 +27,30 @@ class SettingsScreen extends ConsumerWidget {
                 ),
               ),
               child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                    AppSpacing.lg,
-                    AppSpacing.md,
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const _SettingsMenu(),
-                      const SizedBox(width: 16),
-                      const Expanded(child: ProviderManagerPanel()),
-                    ],
-                  ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final size = Size(
+                      constraints.maxWidth,
+                      constraints.maxHeight,
+                    );
+                    final inset = TvLayout.horizontalInset(size) * .58;
+                    return Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        inset,
+                        AppSpacing.md,
+                        inset,
+                        AppSpacing.md,
+                      ),
+                      child: const Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _SettingsMenu(),
+                          SizedBox(width: 14),
+                          Expanded(child: ProviderManagerPanel()),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -102,8 +111,10 @@ class _SettingsMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final width = (size.width * .29).clamp(278.0, 330.0).toDouble();
     return SizedBox(
-      width: 352,
+      width: width,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -123,7 +134,7 @@ class _SettingsMenu extends StatelessWidget {
             child: ListView.separated(
               padding: const EdgeInsets.only(right: 2, bottom: 8),
               itemCount: items.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 9),
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (context, index) => _SettingsCategoryCard(
                 item: items[index],
                 autofocus: index == 0,
@@ -150,8 +161,8 @@ class _SettingsCategoryCard extends StatelessWidget {
       scale: 1.015,
       onPressed: () {},
       child: Container(
-        height: 72,
-        padding: const EdgeInsets.symmetric(horizontal: 13),
+        height: 62,
+        padding: const EdgeInsets.symmetric(horizontal: 11),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
           gradient: item.active
@@ -182,8 +193,8 @@ class _SettingsCategoryCard extends StatelessWidget {
         child: Row(
           children: [
             Container(
-              width: 46,
-              height: 46,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: item.active
                     ? Colors.black.withValues(alpha: .28)
