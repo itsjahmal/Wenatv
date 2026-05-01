@@ -1,0 +1,76 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../theme/app_focus.dart';
+import '../theme/app_radius.dart';
+
+class FocusableCard extends StatefulWidget {
+  const FocusableCard({
+    super.key,
+    required this.child,
+    this.onPressed,
+    this.autofocus = false,
+    this.borderRadius = AppRadius.card,
+    this.scale = AppFocus.focusedScale,
+    this.selected = false,
+    this.decorationBuilder,
+  });
+
+  final Widget child;
+  final VoidCallback? onPressed;
+  final bool autofocus;
+  final double borderRadius;
+  final double scale;
+  final bool selected;
+  final BoxDecoration Function(bool focused, bool selected)? decorationBuilder;
+
+  @override
+  State<FocusableCard> createState() => _FocusableCardState();
+}
+
+class _FocusableCardState extends State<FocusableCard> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final decoration =
+        widget.decorationBuilder?.call(_focused, widget.selected) ??
+        AppFocus.cardDecoration(
+          _focused,
+          selected: widget.selected,
+          radius: widget.borderRadius,
+        );
+    return FocusableActionDetector(
+      autofocus: widget.autofocus,
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+      },
+      actions: {
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onPressed?.call();
+            return null;
+          },
+        ),
+      },
+      onFocusChange: (value) => setState(() => _focused = value),
+      child: GestureDetector(
+        onTap: widget.onPressed,
+        child: AnimatedScale(
+          scale: _focused ? widget.scale : 1,
+          duration: AppFocus.duration,
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: AppFocus.duration,
+            decoration: decoration,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(widget.borderRadius - 1),
+              child: widget.child,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
