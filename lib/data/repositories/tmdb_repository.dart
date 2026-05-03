@@ -150,13 +150,7 @@ class TmdbRepository {
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
         .toList();
-    final trailer = results.firstWhere(
-      (item) => item['site'] == 'YouTube' && item['type'] == 'Trailer',
-      orElse: () => results.firstWhere(
-        (item) => item['site'] == 'YouTube',
-        orElse: () => const {},
-      ),
-    );
+    final trailer = _bestTrailer(results);
     final keyValue = trailer['key']?.toString();
     if (keyValue == null || keyValue.isEmpty) return null;
     final uri = Uri.parse('https://www.youtube.com/watch?v=$keyValue');
@@ -210,4 +204,23 @@ class TmdbRepository {
         .where((item) => item.posterPath != null || item.backdropPath != null)
         .toList();
   }
+}
+
+Map<String, dynamic> _bestTrailer(List<Map<String, dynamic>> results) {
+  final youtube = results
+      .where((item) => item['site']?.toString().toLowerCase() == 'youtube')
+      .toList();
+  if (youtube.isEmpty) return const {};
+  int score(Map<String, dynamic> item) {
+    final type = item['type']?.toString().toLowerCase() ?? '';
+    final name = item['name']?.toString().toLowerCase() ?? '';
+    final official = item['official'] == true || name.contains('official');
+    if (official && type == 'trailer') return 0;
+    if (type == 'trailer') return 1;
+    if (type == 'teaser') return 2;
+    return 3;
+  }
+
+  youtube.sort((a, b) => score(a).compareTo(score(b)));
+  return youtube.first;
 }

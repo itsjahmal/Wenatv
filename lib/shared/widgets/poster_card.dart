@@ -28,7 +28,7 @@ class PosterCard extends StatelessWidget {
       width: cardWidth,
       child: FocusableScale(
         borderRadius: 7,
-        scale: 1.04,
+        scale: 1.03,
         onPressed: onPressed,
         child: AspectRatio(
           aspectRatio: 2 / 3,

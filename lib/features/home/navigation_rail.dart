@@ -4,25 +4,41 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_theme.dart';
 
-class WenaNavigationRail extends StatelessWidget {
+class WenaNavigationRail extends StatefulWidget {
   const WenaNavigationRail({super.key, required this.active});
 
   final String active;
 
   @override
+  State<WenaNavigationRail> createState() => _WenaNavigationRailState();
+}
+
+class _WenaNavigationRailState extends State<WenaNavigationRail> {
+  late final List<FocusNode> _itemFocusNodes;
+
+  @override
+  void initState() {
+    super.initState();
+    _itemFocusNodes = List.generate(
+      _railItems.length,
+      (index) => FocusNode(debugLabel: 'nav-${_railItems[index].label}'),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final node in _itemFocusNodes) {
+      node.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final items = [
-      _RailItem('Search', Icons.search, '/search'),
-      _RailItem('Home', Icons.home_outlined, '/'),
-      _RailItem('Browse', Icons.movie_creation_outlined, '/movies'),
-      _RailItem('TV Shows', Icons.live_tv_outlined, '/tv'),
-      _RailItem('Trending', Icons.trending_up, '/trending'),
-      _RailItem('My List', Icons.bookmark_border, '/watchlist'),
-      _RailItem('Settings', Icons.settings_outlined, '/settings'),
-    ];
     return SizedBox(
       width: TvLayout.navRailWidth,
       child: Container(
+        width: TvLayout.navRailWidth,
         decoration: BoxDecoration(
           color: Colors.black,
           border: Border(
@@ -40,45 +56,51 @@ class WenaNavigationRail extends StatelessWidget {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final compact = constraints.maxHeight < 650;
-              final topGap = compact ? 12.0 : 20.0;
-              final logoGap = compact ? 12.0 : 18.0;
-              final itemGap = compact ? 3.0 : 5.0;
-              final itemHeight = compact ? 45.0 : 49.0;
-              return Column(
+              final itemGap = compact ? 8.0 : 11.0;
+              final itemHeight = compact ? 38.0 : 42.0;
+              return Stack(
                 children: [
-                  SizedBox(height: topGap),
-                  Container(
-                    width: 48,
-                    height: 42,
-                    alignment: Alignment.center,
-                    child: const Text(
-                      'W',
-                      style: TextStyle(
-                        color: WenaTheme.red,
-                        fontSize: 36,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0,
-                        height: 1,
+                  Positioned(
+                    top: compact ? 12 : 20,
+                    left: 0,
+                    right: 0,
+                    child: SizedBox(
+                      width: 44,
+                      height: 40,
+                      child: Center(
+                        child: Text(
+                          'W',
+                          style: TextStyle(
+                            color: WenaTheme.red,
+                            fontSize: compact ? 28 : 31,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0,
+                            height: 1,
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                  SizedBox(height: logoGap),
-                  Expanded(
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: items.length,
-                      separatorBuilder: (_, __) => SizedBox(height: itemGap),
-                      itemBuilder: (context, index) {
-                        final item = items[index];
-                        return Center(
-                          child: _RailButton(
-                            item: item,
-                            active: item.label == active,
-                            height: itemHeight,
-                          ),
-                        );
-                      },
+                  Center(
+                    child: Transform.translate(
+                      offset: Offset(0, compact ? 8 : 14),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (var i = 0; i < _railItems.length; i++) ...[
+                            _RailButton(
+                              item: _railItems[i],
+                              focusNode: _itemFocusNodes[i],
+                              focusNodes: _itemFocusNodes,
+                              index: i,
+                              active: _railItems[i].label == widget.active,
+                              height: itemHeight,
+                            ),
+                            if (i != _railItems.length - 1)
+                              SizedBox(height: itemGap),
+                          ],
+                        ],
+                      ),
                     ),
                   ),
                 ],
@@ -94,32 +116,41 @@ class WenaNavigationRail extends StatelessWidget {
 class _RailButton extends StatelessWidget {
   const _RailButton({
     required this.item,
+    required this.focusNode,
+    required this.focusNodes,
+    required this.index,
     required this.active,
     required this.height,
   });
 
   final _RailItem item;
+  final FocusNode focusNode;
+  final List<FocusNode> focusNodes;
+  final int index;
   final bool active;
   final double height;
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 74,
+      width: 54,
       height: height,
       child: _RailFocusable(
         active: active,
+        focusNode: focusNode,
+        focusNodes: focusNodes,
+        index: index,
         onPressed: () => context.go(item.route),
         child: Stack(
           alignment: Alignment.center,
           children: [
             if (active)
               Positioned(
-                left: 1,
-                top: 11,
-                bottom: 11,
+                left: 5,
+                top: 10,
+                bottom: 10,
                 child: Container(
-                  width: 3,
+                  width: 3.5,
                   decoration: BoxDecoration(
                     color: WenaTheme.red,
                     borderRadius: BorderRadius.circular(999),
@@ -132,27 +163,10 @@ class _RailButton extends StatelessWidget {
                   ),
                 ),
               ),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  item.icon,
-                  color: active ? WenaTheme.red : Colors.white,
-                  size: 22,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  item.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: active ? WenaTheme.red : Colors.white70,
-                    fontSize: 10.5,
-                    fontWeight: active ? FontWeight.w800 : FontWeight.w500,
-                  ),
-                ),
-              ],
+            Icon(
+              item.icon,
+              color: active ? WenaTheme.red : Colors.white,
+              size: 20,
             ),
           ],
         ),
@@ -164,11 +178,17 @@ class _RailButton extends StatelessWidget {
 class _RailFocusable extends StatefulWidget {
   const _RailFocusable({
     required this.active,
+    required this.focusNode,
+    required this.focusNodes,
+    required this.index,
     required this.onPressed,
     required this.child,
   });
 
   final bool active;
+  final FocusNode focusNode;
+  final List<FocusNode> focusNodes;
+  final int index;
   final VoidCallback onPressed;
   final Widget child;
 
@@ -181,35 +201,54 @@ class _RailFocusableState extends State<_RailFocusable> {
 
   @override
   Widget build(BuildContext context) {
-    return FocusableActionDetector(
-      shortcuts: const {
-        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
-        SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
-      },
-      actions: {
-        ActivateIntent: CallbackAction<ActivateIntent>(
-          onInvoke: (_) {
-            widget.onPressed();
-            return null;
-          },
-        ),
+    return Focus(
+      focusNode: widget.focusNode,
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        if (event is KeyDownEvent && _isActivationKey(event.logicalKey)) {
+          widget.onPressed();
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+          final next = (widget.index + 1).clamp(
+            0,
+            widget.focusNodes.length - 1,
+          );
+          widget.focusNodes[next].requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+          final previous = (widget.index - 1).clamp(
+            0,
+            widget.focusNodes.length - 1,
+          );
+          widget.focusNodes[previous].requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+          FocusScope.of(context).focusInDirection(TraversalDirection.right);
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
       },
       onFocusChange: (value) => setState(() => _focused = value),
       child: GestureDetector(
         onTap: widget.onPressed,
         child: AnimatedScale(
-          scale: _focused ? 1.025 : 1,
+          scale: _focused ? 1.018 : 1,
           duration: const Duration(milliseconds: 150),
           curve: Curves.easeOut,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             decoration: BoxDecoration(
               color: _focused
-                  ? Colors.white.withValues(alpha: .08)
+                  ? Colors.white.withValues(alpha: .075)
                   : widget.active
                   ? WenaTheme.red.withValues(alpha: .10)
                   : Colors.transparent,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: _focused
                     ? WenaTheme.red
@@ -240,4 +279,22 @@ class _RailItem {
   final String label;
   final IconData icon;
   final String route;
+}
+
+const _railItems = [
+  _RailItem('Search', Icons.search, '/search'),
+  _RailItem('Home', Icons.home_outlined, '/'),
+  _RailItem('Movies', Icons.movie_creation_outlined, '/movies'),
+  _RailItem('Series', Icons.live_tv_outlined, '/tv'),
+  _RailItem('Trending', Icons.trending_up, '/trending'),
+  _RailItem('Watchlist', Icons.bookmark_add_outlined, '/watchlist'),
+  _RailItem('Settings', Icons.settings_outlined, '/settings'),
+];
+
+bool _isActivationKey(LogicalKeyboardKey key) {
+  return key == LogicalKeyboardKey.select ||
+      key == LogicalKeyboardKey.enter ||
+      key == LogicalKeyboardKey.numpadEnter ||
+      key == LogicalKeyboardKey.space ||
+      key == LogicalKeyboardKey.gameButtonA;
 }

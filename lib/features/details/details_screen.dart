@@ -1,8 +1,8 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/config/api_config.dart';
 import '../../core/theme/app_theme.dart';
@@ -14,9 +14,11 @@ import '../../features/providers/provider_js_bridge.dart';
 import '../../features/providers/provider_manager_controller.dart';
 import '../../features/providers/provider_stream_resolver.dart';
 import '../../features/providers/unified_availability_service.dart';
+import '../../features/watchlist/watchlist_controller.dart';
 import '../../shared/widgets/focusable_scale.dart';
 import '../../shared/widgets/poster_card.dart';
 import '../../shared/widgets/wena_button.dart';
+import '../../widgets/focusable_card.dart';
 
 final detailsProvider =
     FutureProvider.family<MediaItem, ({int id, MediaKind kind})>((ref, args) {
@@ -339,17 +341,26 @@ class DetailsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final details = initialItem == null
-        ? ref.watch(detailsProvider((id: id, kind: kind)))
-        : AsyncData(initialItem!);
+    final details = ref.watch(detailsProvider((id: id, kind: kind)));
     return PopScope(
-      canPop: true,
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (context.canPop()) {
+          context.pop();
+        } else {
+          context.go('/');
+        }
+      },
       child: Scaffold(
         body: details.when(
-          data: (item) => _DetailsBody(item: item),
-          loading: () => const Center(
-            child: CircularProgressIndicator(color: WenaTheme.red),
-          ),
+          data: (item) =>
+              _DetailsBody(item: _mergeInitialDetails(item, initialItem)),
+          loading: () => initialItem == null
+              ? const Center(
+                  child: CircularProgressIndicator(color: WenaTheme.red),
+                )
+              : _DetailsBody(item: initialItem!),
           error: (_, __) => Center(
             child: WenaButton(
               label: 'Back',
@@ -362,6 +373,20 @@ class DetailsScreen extends ConsumerWidget {
       ),
     );
   }
+}
+
+MediaItem _mergeInitialDetails(MediaItem details, MediaItem? initial) {
+  if (initial == null) return details;
+  return details.copyWith(
+    externalPosterUrl: details.externalPosterUrl ?? initial.externalPosterUrl,
+    externalBackdropUrl:
+        details.externalBackdropUrl ?? initial.externalBackdropUrl,
+    sourceUrl: initial.sourceUrl,
+    sourceProvider: initial.sourceProvider,
+    sourceProviderName: initial.sourceProviderName,
+    sourceLink: initial.sourceLink,
+    sourceTitle: initial.sourceTitle,
+  );
 }
 
 class _DetailsBody extends ConsumerStatefulWidget {
@@ -386,6 +411,13 @@ class _DetailsBodyState extends ConsumerState<_DetailsBody> {
   Widget build(BuildContext context) {
     final recs = ref.watch(
       recommendationsProvider((id: item.id, kind: item.kind)),
+    );
+    final watchlisted = ref.watch(
+      watchlistProvider.select(
+        (items) => items.any(
+          (saved) => saved.id == item.id && saved.kind == item.kind,
+        ),
+      ),
     );
     final cast = item.kind == MediaKind.movie
         ? ref.watch(castProvider((id: item.id, kind: item.kind)))
@@ -445,8 +477,10 @@ class _DetailsBodyState extends ConsumerState<_DetailsBody> {
         loadingEpisodes: episodes?.isLoading == true,
         recommendations: recs,
         selectedStream: selectedStream,
+        watchlisted: watchlisted,
         onPlay: () => _openEpisode(selectedEpisode, episodeItems),
         onTrailer: () => _openTrailer(context, ref),
+        onWatchlist: _toggleWatchlist,
         onTab: (index) => setState(() => _selectedSeriesTab = index),
         onSeason: (season) {
           setState(() {
@@ -472,6 +506,8 @@ class _DetailsBodyState extends ConsumerState<_DetailsBody> {
       recommendations: recs,
       onPlay: _openMovie,
       onTrailer: () => _openTrailer(context, ref),
+      watchlisted: watchlisted,
+      onWatchlist: _toggleWatchlist,
       onTab: (index) => setState(() => _selectedMovieTab = index),
     );
   }
@@ -562,12 +598,19 @@ class _DetailsBodyState extends ConsumerState<_DetailsBody> {
     _openSelectedStream(selected, sorted, const []);
   }
 
-  Future<void> _openTrailer(BuildContext context, WidgetRef ref) async {
-    final uri = await ref
-        .read(tmdbRepositoryProvider)
-        .trailerUri(item.id, item.kind);
-    if (uri == null) return;
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  void _openTrailer(BuildContext context, WidgetRef ref) {
+    context.push('/trailer/${item.kind.name}/${item.id}', extra: item.title);
+  }
+
+  Future<void> _toggleWatchlist() async {
+    final added = await ref.read(watchlistProvider.notifier).toggle(item);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(added ? 'Added to Watchlist' : 'Removed from Watchlist'),
+        duration: const Duration(milliseconds: 1300),
+      ),
+    );
   }
 }
 
@@ -579,6 +622,8 @@ class _MovieDetailsScreen extends StatelessWidget {
     required this.recommendations,
     required this.onPlay,
     required this.onTrailer,
+    required this.watchlisted,
+    required this.onWatchlist,
     required this.onTab,
   });
 
@@ -588,6 +633,8 @@ class _MovieDetailsScreen extends StatelessWidget {
   final AsyncValue<List<MediaItem>> recommendations;
   final VoidCallback onPlay;
   final VoidCallback onTrailer;
+  final bool watchlisted;
+  final VoidCallback onWatchlist;
   final ValueChanged<int> onTab;
 
   @override
@@ -596,7 +643,14 @@ class _MovieDetailsScreen extends StatelessWidget {
         item.externalBackdropUrl ?? ApiConfig.backdrop(item.backdropPath);
     final size = MediaQuery.sizeOf(context);
     final horizontalInset = TvLayout.horizontalInset(size);
-    final heroHeight = TvLayout.heroHeight(size, ratio: .50);
+    final heroHeight = TvLayout.movieHeroHeight(size);
+    assert(() {
+      debugPrint(
+        'TV MovieDetails size=$size dpr=${MediaQuery.devicePixelRatioOf(context)} '
+        'scale=${TvLayout.tvScale(size)} inset=$horizontalInset hero=$heroHeight',
+      );
+      return true;
+    }());
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -636,24 +690,26 @@ class _MovieDetailsScreen extends StatelessWidget {
           child: CustomScrollView(
             slivers: [
               SliverToBoxAdapter(
-                child: SizedBox(
-                  height: heroHeight,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: heroHeight),
                   child: Padding(
                     padding: EdgeInsets.fromLTRB(
                       horizontalInset,
-                      (size.height * .055).clamp(28.0, 48.0).toDouble(),
+                      (size.height * .024).clamp(12.0, 18.0).toDouble(),
                       horizontalInset,
-                      20,
+                      8,
                     ),
                     child: Align(
                       alignment: Alignment.centerLeft,
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 820),
+                        constraints: const BoxConstraints(maxWidth: 740),
                         child: _MovieHeroInfo(
                           size: size,
                           item: item,
                           onPlay: onPlay,
                           onTrailer: onTrailer,
+                          watchlisted: watchlisted,
+                          onWatchlist: onWatchlist,
                         ),
                       ),
                     ),
@@ -675,9 +731,9 @@ class _MovieDetailsScreen extends StatelessWidget {
                 child: Padding(
                   padding: EdgeInsets.fromLTRB(
                     horizontalInset,
-                    20,
+                    14,
                     horizontalInset,
-                    34,
+                    24,
                   ),
                   child: _MovieTabContent(
                     selectedTab: selectedTab,
@@ -701,12 +757,16 @@ class _MovieHeroInfo extends StatelessWidget {
     required this.item,
     required this.onPlay,
     required this.onTrailer,
+    required this.watchlisted,
+    required this.onWatchlist,
   });
 
   final Size size;
   final MediaItem item;
   final VoidCallback onPlay;
   final VoidCallback onTrailer;
+  final bool watchlisted;
+  final VoidCallback onWatchlist;
 
   @override
   Widget build(BuildContext context) {
@@ -720,14 +780,14 @@ class _MovieHeroInfo extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.displayLarge?.copyWith(
             fontSize: TvLayout.detailTitleSize(size),
-            height: .96,
+            height: .98,
             shadows: const [Shadow(color: Colors.black, blurRadius: 18)],
           ),
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 7),
         Wrap(
-          spacing: 12,
-          runSpacing: 8,
+          spacing: 8,
+          runSpacing: 5,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             _RatingBadge(rating: item.rating),
@@ -741,25 +801,25 @@ class _MovieHeroInfo extends StatelessWidget {
               ),
           ],
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 6),
         Text(
           item.overview,
-          maxLines: 3,
+          maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
             color: Colors.white.withValues(alpha: .84),
-            height: 1.42,
+            fontSize: (TvLayout.bodySize(size) - .8).clamp(11.5, 14.2),
+            height: 1.32,
           ),
         ),
-        const SizedBox(height: 28),
+        const SizedBox(height: 8),
         Wrap(
-          spacing: 14,
-          runSpacing: 10,
+          spacing: 8,
+          runSpacing: 5,
           children: [
             _MovieActionButton(
               label: 'Play',
               icon: Icons.play_arrow,
-              primary: true,
               autofocus: true,
               scale: TvLayout.tvScale(size),
               onPressed: onPlay,
@@ -771,16 +831,12 @@ class _MovieHeroInfo extends StatelessWidget {
               onPressed: onTrailer,
             ),
             _MovieActionButton(
-              label: 'Watchlist',
-              icon: Icons.add_circle_outline,
+              label: watchlisted ? 'In Watchlist' : 'Watchlist',
+              icon: watchlisted
+                  ? Icons.check_circle_outline
+                  : Icons.add_circle_outline,
               scale: TvLayout.tvScale(size),
-              onPressed: () {},
-            ),
-            _MovieActionButton(
-              label: 'Share',
-              icon: Icons.share_outlined,
-              scale: TvLayout.tvScale(size),
-              onPressed: () {},
+              onPressed: onWatchlist,
             ),
           ],
         ),
@@ -789,12 +845,11 @@ class _MovieHeroInfo extends StatelessWidget {
   }
 }
 
-class _MovieActionButton extends StatelessWidget {
+class _MovieActionButton extends StatefulWidget {
   const _MovieActionButton({
     required this.label,
     required this.icon,
     required this.onPressed,
-    this.primary = false,
     this.autofocus = false,
     this.scale = 1,
   });
@@ -802,52 +857,85 @@ class _MovieActionButton extends StatelessWidget {
   final String label;
   final IconData icon;
   final VoidCallback onPressed;
-  final bool primary;
   final bool autofocus;
   final double scale;
 
   @override
+  State<_MovieActionButton> createState() => _MovieActionButtonState();
+}
+
+class _MovieActionButtonState extends State<_MovieActionButton> {
+  bool _focused = false;
+
+  @override
   Widget build(BuildContext context) {
-    return FocusableScale(
-      autofocus: autofocus,
-      borderRadius: 9,
-      scale: 1.025,
-      onPressed: onPressed,
-      child: Container(
-        height: (50 * scale).clamp(46.0, 54.0).toDouble(),
-        padding: EdgeInsets.symmetric(
-          horizontal: (23 * scale).clamp(20.0, 26.0).toDouble(),
+    final scale = widget.scale;
+    return FocusableActionDetector(
+      autofocus: widget.autofocus,
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+      },
+      actions: {
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onPressed();
+            return null;
+          },
         ),
-        decoration: BoxDecoration(
-          color: primary ? WenaTheme.red : Colors.black.withValues(alpha: .38),
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(
-            color: primary
-                ? WenaTheme.red
-                : Colors.white.withValues(alpha: .24),
-          ),
-          boxShadow: primary
-              ? [
-                  BoxShadow(
-                    color: WenaTheme.red.withValues(alpha: .32),
-                    blurRadius: 22,
-                  ),
-                ]
-              : null,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: (21 * scale).clamp(19.0, 23.0).toDouble()),
-            SizedBox(width: (10 * scale).clamp(9.0, 12.0).toDouble()),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: (15.5 * scale).clamp(14.0, 17.0).toDouble(),
-                fontWeight: FontWeight.w900,
-              ),
+      },
+      onFocusChange: (value) => setState(() => _focused = value),
+      child: GestureDetector(
+        onTap: widget.onPressed,
+        child: AnimatedScale(
+          scale: _focused ? 1.018 : 1,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            height: (34 * scale).clamp(31.0, 38.0).toDouble(),
+            padding: EdgeInsets.symmetric(
+              horizontal: (14 * scale).clamp(12.0, 17.0).toDouble(),
             ),
-          ],
+            decoration: BoxDecoration(
+              color: _focused
+                  ? WenaTheme.red
+                  : Colors.white.withValues(alpha: .92),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: _focused
+                    ? WenaTheme.red
+                    : Colors.white.withValues(alpha: .22),
+              ),
+              boxShadow: _focused
+                  ? [
+                      BoxShadow(
+                        color: WenaTheme.red.withValues(alpha: .30),
+                        blurRadius: 16,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  widget.icon,
+                  size: (15 * scale).clamp(13.0, 17.0).toDouble(),
+                  color: _focused ? Colors.white : Colors.black,
+                ),
+                SizedBox(width: (7 * scale).clamp(5.0, 8.0).toDouble()),
+                Text(
+                  widget.label,
+                  style: TextStyle(
+                    color: _focused ? Colors.white : Colors.black,
+                    fontSize: (11.4 * scale).clamp(10.2, 12.4).toDouble(),
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -872,12 +960,90 @@ class _MovieTabBar extends StatelessWidget {
       child: Row(
         children: [
           for (var index = 0; index < labels.length; index++)
-            _SeriesTab(
+            _MovieTab(
               label: labels[index],
               selected: selected == index,
               onPressed: () => onSelected(index),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _MovieTab extends StatefulWidget {
+  const _MovieTab({
+    required this.label,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  State<_MovieTab> createState() => _MovieTabState();
+}
+
+class _MovieTabState extends State<_MovieTab> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+      },
+      actions: {
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onPressed();
+            return null;
+          },
+        ),
+      },
+      onFocusChange: (value) => setState(() => _focused = value),
+      child: GestureDetector(
+        onTap: widget.onPressed,
+        child: AnimatedScale(
+          scale: _focused ? 1.012 : 1,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: widget.label == 'More Like This' ? 120 : 78,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            alignment: Alignment.centerLeft,
+            decoration: BoxDecoration(
+              color: _focused
+                  ? Colors.white.withValues(alpha: .055)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(7),
+              border: Border(
+                bottom: BorderSide(
+                  color: _focused
+                      ? WenaTheme.red
+                      : widget.selected
+                      ? Colors.white.withValues(alpha: .36)
+                      : Colors.transparent,
+                  width: _focused ? 2.5 : 1.2,
+                ),
+              ),
+            ),
+            child: Text(
+              widget.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: widget.selected ? Colors.white : Colors.white60,
+                fontSize: 10.8,
+                fontWeight: widget.selected ? FontWeight.w900 : FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -907,25 +1073,87 @@ class _MovieTabContent extends StatelessWidget {
     }
     if (selectedTab == 2) {
       return recommendations.when(
-        data: (items) => _MovieLandscapeRecommendations(items: items),
+        data: (items) => _MoviePosterRecommendations(items: items),
         loading: () => const _DetailsLoadingStrip(),
         error: (_, __) => const SizedBox.shrink(),
       );
     }
+    return _MovieOverviewPanel(item: item);
+  }
+}
+
+class _MovieOverviewPanel extends StatelessWidget {
+  const _MovieOverviewPanel({required this.item});
+
+  final MediaItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: (size.width * .62).clamp(560, 760)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Overview',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontSize: 16),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            item.overview.isEmpty
+                ? 'No overview is available for this movie yet.'
+                : item.overview,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: .78),
+              fontSize: (TvLayout.bodySize(size) - 1).clamp(11.5, 14.0),
+              height: 1.38,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MoviePosterRecommendations extends StatelessWidget {
+  const _MoviePosterRecommendations({required this.items});
+
+  final List<MediaItem> items;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayItems = items.isEmpty ? _fallbackRecommendations() : items;
+    final size = MediaQuery.sizeOf(context);
+    final cardWidth = TvLayout.posterWidthFor(size);
+    final rowHeight = (cardWidth * 1.5) + 8;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        cast.when(
-          data: (items) =>
-              _MovieCastSection(items: _castItems(items).take(4).toList()),
-          loading: () => const _DetailsLoadingStrip(),
-          error: (_, __) => _MovieCastSection(items: _fallbackCast()),
+        Text(
+          'More Like This',
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(fontSize: 16),
         ),
-        const SizedBox(height: 24),
-        recommendations.when(
-          data: (items) => _MovieLandscapeRecommendations(items: items),
-          loading: () => const _DetailsLoadingStrip(),
-          error: (_, __) => const SizedBox.shrink(),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: rowHeight,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: displayItems.take(10).length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (context, index) {
+              final item = displayItems[index];
+              return PosterCard(
+                item: item,
+                width: cardWidth,
+                onPressed: () => item.id <= 0
+                    ? null
+                    : context.push('/details/${item.kind.name}/${item.id}'),
+              );
+            },
+          ),
         ),
       ],
     );
@@ -941,21 +1169,24 @@ class _MovieCastSection extends StatelessWidget {
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
     final size = MediaQuery.sizeOf(context);
-    final rowHeight = (size.height * .125).clamp(82.0, 96.0).toDouble();
+    final rowHeight = (size.height * .078).clamp(50.0, 62.0).toDouble();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Top Cast', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 12),
+        Text(
+          'Top Cast',
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(fontSize: 16),
+        ),
+        const SizedBox(height: 6),
         SizedBox(
           height: rowHeight,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             itemCount: items.take(8).length,
-            separatorBuilder: (_, __) => const SizedBox(width: 16),
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
             itemBuilder: (context, index) {
               final member = items[index];
-              return _CastCard(member: member, selected: index == 0);
+              return _CastCard(member: member);
             },
           ),
         ),
@@ -965,22 +1196,20 @@ class _MovieCastSection extends StatelessWidget {
 }
 
 class _CastCard extends StatelessWidget {
-  const _CastCard({required this.member, required this.selected});
+  const _CastCard({required this.member});
 
   final CastMember member;
-  final bool selected;
 
   @override
   Widget build(BuildContext context) {
     final imageUrl = ApiConfig.poster(member.profilePath, size: 'w185');
     final size = MediaQuery.sizeOf(context);
-    final cardWidth = (size.width * .235).clamp(220.0, 270.0).toDouble();
-    final cardHeight = (size.height * .125).clamp(82.0, 96.0).toDouble();
-    final imageWidth = (cardHeight * .92).clamp(74.0, 88.0).toDouble();
+    final cardWidth = (size.width * .145).clamp(138.0, 174.0).toDouble();
+    final cardHeight = (size.height * .078).clamp(50.0, 62.0).toDouble();
+    final imageWidth = (cardHeight * .82).clamp(42.0, 52.0).toDouble();
     return SizedBox(
       width: cardWidth,
       child: FocusableScale(
-        selected: selected,
         borderRadius: 9,
         scale: 1.02,
         onPressed: () {},
@@ -988,20 +1217,7 @@ class _CastCard extends StatelessWidget {
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: .42),
             borderRadius: BorderRadius.circular(9),
-            border: Border.all(
-              color: selected
-                  ? WenaTheme.red
-                  : Colors.white.withValues(alpha: .14),
-              width: selected ? 2 : 1,
-            ),
-            boxShadow: selected
-                ? [
-                    BoxShadow(
-                      color: WenaTheme.red.withValues(alpha: .30),
-                      blurRadius: 18,
-                    ),
-                  ]
-                : null,
+            border: Border.all(color: Colors.white.withValues(alpha: .14)),
           ),
           child: Row(
             children: [
@@ -1022,7 +1238,7 @@ class _CastCard extends StatelessWidget {
                         fit: BoxFit.cover,
                       ),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -1033,127 +1249,26 @@ class _CastCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 15,
+                        fontSize: 11.2,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
-                    const SizedBox(height: 5),
+                    const SizedBox(height: 3),
                     Text(
                       member.character.isEmpty ? 'Cast' : member.character,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: Colors.white60,
-                        fontSize: 14,
+                        fontSize: 10.2,
                       ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 6),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MovieLandscapeRecommendations extends StatelessWidget {
-  const _MovieLandscapeRecommendations({required this.items});
-
-  final List<MediaItem> items;
-
-  @override
-  Widget build(BuildContext context) {
-    final displayItems = items.isEmpty ? _fallbackRecommendations() : items;
-    final size = MediaQuery.sizeOf(context);
-    final rowHeight = (size.height * .17).clamp(104.0, 128.0).toDouble();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('More Like This', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: rowHeight,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: displayItems.take(10).length,
-            separatorBuilder: (_, __) => const SizedBox(width: 16),
-            itemBuilder: (context, index) {
-              final item = displayItems[index];
-              return _MovieLandscapeCard(item: item, selected: index == 0);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _MovieLandscapeCard extends StatelessWidget {
-  const _MovieLandscapeCard({required this.item, required this.selected});
-
-  final MediaItem item;
-  final bool selected;
-
-  @override
-  Widget build(BuildContext context) {
-    final imageUrl =
-        item.externalBackdropUrl ??
-        ApiConfig.backdrop(item.backdropPath, size: 'w780');
-    final cardWidth = (MediaQuery.sizeOf(context).width * .20)
-        .clamp(190.0, 230.0)
-        .toDouble();
-    return SizedBox(
-      width: cardWidth,
-      child: FocusableScale(
-        selected: selected,
-        borderRadius: 9,
-        scale: 1.025,
-        onPressed: () => item.id <= 0
-            ? null
-            : context.push('/details/${item.kind.name}/${item.id}'),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(9),
-              child: imageUrl.isEmpty
-                  ? Container(color: WenaTheme.soft)
-                  : CachedNetworkImage(imageUrl: imageUrl, fit: BoxFit.cover),
-            ),
-            Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(9),
-                gradient: const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Color(0xDD000000)],
-                ),
-                border: Border.all(
-                  color: selected
-                      ? WenaTheme.red
-                      : Colors.white.withValues(alpha: .16),
-                  width: selected ? 2 : 1,
-                ),
-              ),
-            ),
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 10,
-              child: Text(
-                item.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -1268,8 +1383,10 @@ class _SeriesDetailsScreen extends StatelessWidget {
     required this.loadingEpisodes,
     required this.recommendations,
     required this.selectedStream,
+    required this.watchlisted,
     required this.onPlay,
     required this.onTrailer,
+    required this.onWatchlist,
     required this.onTab,
     required this.onSeason,
     required this.onEpisode,
@@ -1283,8 +1400,10 @@ class _SeriesDetailsScreen extends StatelessWidget {
   final bool loadingEpisodes;
   final AsyncValue<List<MediaItem>> recommendations;
   final StreamSource? selectedStream;
+  final bool watchlisted;
   final VoidCallback onPlay;
   final VoidCallback onTrailer;
+  final VoidCallback onWatchlist;
   final ValueChanged<int> onTab;
   final ValueChanged<int> onSeason;
   final ValueChanged<EpisodeItem> onEpisode;
@@ -1295,7 +1414,16 @@ class _SeriesDetailsScreen extends StatelessWidget {
         item.externalBackdropUrl ?? ApiConfig.backdrop(item.backdropPath);
     final size = MediaQuery.sizeOf(context);
     final horizontalInset = TvLayout.horizontalInset(size);
-    final heroHeight = TvLayout.heroHeight(size, ratio: .46);
+    final heroHeight = (TvLayout.seriesHeroHeight(size) * .88)
+        .clamp(185.0, 238.0)
+        .toDouble();
+    assert(() {
+      debugPrint(
+        'TV SeriesDetails size=$size dpr=${MediaQuery.devicePixelRatioOf(context)} '
+        'scale=${TvLayout.tvScale(size)} inset=$horizontalInset hero=$heroHeight',
+      );
+      return true;
+    }());
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -1335,25 +1463,27 @@ class _SeriesDetailsScreen extends StatelessWidget {
           child: CustomScrollView(
             slivers: [
               SliverToBoxAdapter(
-                child: SizedBox(
-                  height: heroHeight,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: heroHeight),
                   child: Padding(
                     padding: EdgeInsets.fromLTRB(
                       horizontalInset,
-                      (size.height * .05).clamp(26.0, 44.0).toDouble(),
+                      (size.height * .020).clamp(10.0, 17.0).toDouble(),
                       horizontalInset,
-                      18,
+                      8,
                     ),
                     child: Align(
                       alignment: Alignment.centerLeft,
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 760),
+                        constraints: const BoxConstraints(maxWidth: 700),
                         child: _SeriesHeroInfo(
                           size: size,
                           item: item,
                           stream: selectedStream,
+                          watchlisted: watchlisted,
                           onPlay: onPlay,
                           onTrailer: onTrailer,
+                          onWatchlist: onWatchlist,
                         ),
                       ),
                     ),
@@ -1378,9 +1508,9 @@ class _SeriesDetailsScreen extends StatelessWidget {
                 child: Padding(
                   padding: EdgeInsets.fromLTRB(
                     horizontalInset,
-                    16,
+                    12,
                     horizontalInset,
-                    30,
+                    24,
                   ),
                   child: selectedTab == 0
                       ? _SeriesOverviewPanel(item: item)
@@ -1421,15 +1551,19 @@ class _SeriesHeroInfo extends StatelessWidget {
     required this.size,
     required this.item,
     required this.stream,
+    required this.watchlisted,
     required this.onPlay,
     required this.onTrailer,
+    required this.onWatchlist,
   });
 
   final Size size;
   final MediaItem item;
   final StreamSource? stream;
+  final bool watchlisted;
   final VoidCallback onPlay;
   final VoidCallback onTrailer;
+  final VoidCallback onWatchlist;
 
   @override
   Widget build(BuildContext context) {
@@ -1447,10 +1581,10 @@ class _SeriesHeroInfo extends StatelessWidget {
             shadows: const [Shadow(color: Colors.black, blurRadius: 18)],
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 5),
         Wrap(
-          spacing: 12,
-          runSpacing: 8,
+          spacing: 8,
+          runSpacing: 5,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             _RatingBadge(rating: item.rating),
@@ -1463,41 +1597,45 @@ class _SeriesHeroInfo extends StatelessWidget {
               ),
           ],
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 6),
         Text(
           item.overview,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
             color: Colors.white.withValues(alpha: .82),
-            height: 1.35,
+            fontSize: (TvLayout.bodySize(size) - .8).clamp(11.5, 14.2),
+            height: 1.32,
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 8),
         Wrap(
-          spacing: 14,
-          runSpacing: 10,
+          spacing: 8,
+          runSpacing: 5,
           children: [
-            WenaButton(
+            _SeriesActionButton(
               label: 'Play',
               icon: Icons.play_arrow,
-              primary: true,
               autofocus: true,
               onPressed: onPlay,
             ),
-            WenaButton(
+            _SeriesActionButton(
               label: 'Trailer',
               icon: Icons.movie_outlined,
               onPressed: onTrailer,
             ),
-            WenaButton(label: 'Watchlist', icon: Icons.add, onPressed: () {}),
+            _SeriesActionButton(
+              label: watchlisted ? 'In Watchlist' : 'Watchlist',
+              icon: watchlisted ? Icons.check : Icons.add,
+              onPressed: onWatchlist,
+            ),
           ],
         ),
         if (stream != null) ...[
-          const SizedBox(height: 14),
+          const SizedBox(height: 6),
           Text(
             '${_cleanQuality(stream!.quality, stream!.url)} • ${_cleanContainer(stream!.format, stream!.url)}',
-            style: const TextStyle(color: Colors.white54, fontSize: 13),
+            style: const TextStyle(color: Colors.white54, fontSize: 11.5),
           ),
         ],
       ],
@@ -1547,26 +1685,131 @@ class _SeriesTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return FocusableScale(
-      borderRadius: 4,
-      scale: 1.02,
+    return FocusableCard(
+      borderRadius: 7,
+      scale: 1.012,
       onPressed: onPressed,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(0, 12, 44, 12),
-        decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: selected ? WenaTheme.red : Colors.transparent,
-              width: 3,
+      decorationBuilder: (focused, _) => BoxDecoration(
+        color: focused
+            ? Colors.white.withValues(alpha: .055)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: SizedBox(
+        width: label == 'More Like This' ? 128 : 92,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 7),
+          alignment: Alignment.centerLeft,
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: selected ? WenaTheme.red : Colors.transparent,
+                width: 2.5,
+              ),
+            ),
+          ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: selected ? Colors.white : Colors.white60,
+              fontSize: 11.4,
+              fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
             ),
           ),
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? Colors.white : Colors.white60,
-            fontSize: 17,
-            fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+      ),
+    );
+  }
+}
+
+class _SeriesActionButton extends StatefulWidget {
+  const _SeriesActionButton({
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+    this.autofocus = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onPressed;
+  final bool autofocus;
+
+  @override
+  State<_SeriesActionButton> createState() => _SeriesActionButtonState();
+}
+
+class _SeriesActionButtonState extends State<_SeriesActionButton> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusableActionDetector(
+      autofocus: widget.autofocus,
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+      },
+      actions: {
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onPressed();
+            return null;
+          },
+        ),
+      },
+      onFocusChange: (value) => setState(() => _focused = value),
+      child: GestureDetector(
+        onTap: widget.onPressed,
+        child: AnimatedScale(
+          scale: _focused ? 1.018 : 1,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            decoration: BoxDecoration(
+              color: _focused
+                  ? WenaTheme.red
+                  : Colors.white.withValues(alpha: .92),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: _focused
+                    ? WenaTheme.red
+                    : Colors.white.withValues(alpha: .22),
+              ),
+              boxShadow: _focused
+                  ? [
+                      BoxShadow(
+                        color: WenaTheme.red.withValues(alpha: .30),
+                        blurRadius: 16,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    widget.icon,
+                    size: 16,
+                    color: _focused ? Colors.white : Colors.black,
+                  ),
+                  const SizedBox(width: 7),
+                  Text(
+                    widget.label,
+                    style: TextStyle(
+                      color: _focused ? Colors.white : Colors.black,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -1596,7 +1839,7 @@ class _SeriesEpisodeList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final seasonHeight = (size.height * .078).clamp(40.0, 46.0).toDouble();
+    final seasonHeight = (size.height * .048).clamp(28.0, 32.0).toDouble();
     final seasons = List.generate(
       (item.totalSeasons ?? selectedSeason).clamp(1, 30),
       (index) => index + 1,
@@ -1609,7 +1852,7 @@ class _SeriesEpisodeList extends StatelessWidget {
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             itemCount: seasons.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
             itemBuilder: (context, index) {
               final season = seasons[index];
               return _SeriesSeasonButton(
@@ -1620,10 +1863,10 @@ class _SeriesEpisodeList extends StatelessWidget {
             },
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 6),
         if (loading)
           SizedBox(
-            height: (size.height * .26).clamp(150.0, 210.0).toDouble(),
+            height: (size.height * .18).clamp(100.0, 140.0).toDouble(),
             child: Center(
               child: CircularProgressIndicator(color: WenaTheme.red),
             ),
@@ -1642,7 +1885,7 @@ class _SeriesEpisodeList extends StatelessWidget {
                   selected: episode.number == selectedEpisode,
                   onPressed: () => onEpisode(episode),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 5),
               ],
             ],
           ),
@@ -1668,10 +1911,10 @@ class _SeriesSeasonButton extends StatelessWidget {
     final scale = TvLayout.tvScale(size);
     return FocusableScale(
       borderRadius: 8,
-      scale: 1.025,
+      scale: 1.018,
       onPressed: onPressed,
       child: Container(
-        width: (132 * scale).clamp(118.0, 150.0).toDouble(),
+        width: (92 * scale).clamp(82.0, 102.0).toDouble(),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected ? WenaTheme.red : Colors.black.withValues(alpha: .28),
@@ -1685,9 +1928,12 @@ class _SeriesSeasonButton extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(label, style: const TextStyle(fontWeight: FontWeight.w900)),
-            const SizedBox(width: 8),
-            const Icon(Icons.keyboard_arrow_down, size: 18),
+            Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 11),
+            ),
+            const SizedBox(width: 5),
+            const Icon(Icons.keyboard_arrow_down, size: 14),
           ],
         ),
       ),
@@ -1712,9 +1958,9 @@ class _SeriesEpisodeRow extends StatelessWidget {
         ? ''
         : ApiConfig.backdrop(episode.stillPath, size: 'w500');
     final size = MediaQuery.sizeOf(context);
-    final rowHeight = (size.height * .20).clamp(104.0, 126.0).toDouble();
-    final thumbWidth = (rowHeight * 1.72).clamp(170.0, 196.0).toDouble();
-    final thumbHeight = (thumbWidth * 9 / 16).clamp(96.0, 110.0).toDouble();
+    final rowHeight = (size.height * .118).clamp(64.0, 78.0).toDouble();
+    final thumbWidth = (rowHeight * 1.68).clamp(108.0, 132.0).toDouble();
+    final thumbHeight = (thumbWidth * 9 / 16).clamp(60.0, 74.0).toDouble();
     return FocusableScale(
       borderRadius: 10,
       scale: 1.012,
@@ -1722,7 +1968,7 @@ class _SeriesEpisodeRow extends StatelessWidget {
       onPressed: onPressed,
       child: Container(
         height: rowHeight,
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.all(5),
         decoration: BoxDecoration(
           color: selected
               ? WenaTheme.red.withValues(alpha: .14)
@@ -1732,13 +1978,13 @@ class _SeriesEpisodeRow extends StatelessWidget {
             color: selected
                 ? WenaTheme.red
                 : Colors.white.withValues(alpha: .12),
-            width: selected ? 2 : 1,
+            width: selected ? 1.5 : 1,
           ),
           boxShadow: selected
               ? [
                   BoxShadow(
                     color: WenaTheme.red.withValues(alpha: .35),
-                    blurRadius: 20,
+                    blurRadius: 14,
                   ),
                 ]
               : null,
@@ -1746,17 +1992,17 @@ class _SeriesEpisodeRow extends StatelessWidget {
         child: Row(
           children: [
             SizedBox(
-              width: 38,
+              width: 24,
               child: Text(
                 '${episode.number}',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  fontSize: 22,
+                  fontSize: 13.5,
                   fontWeight: FontWeight.w900,
                 ),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 7),
             ClipRRect(
               borderRadius: BorderRadius.circular(7),
               child: Stack(
@@ -1775,19 +2021,19 @@ class _SeriesEpisodeRow extends StatelessWidget {
                           fit: BoxFit.cover,
                         ),
                   Container(
-                    width: 38,
-                    height: 38,
+                    width: 26,
+                    height: 26,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: Colors.black.withValues(alpha: .48),
                       border: Border.all(color: Colors.white70),
                     ),
-                    child: const Icon(Icons.play_arrow, size: 25),
+                    child: const Icon(Icons.play_arrow, size: 17),
                   ),
                 ],
               ),
             ),
-            const SizedBox(width: 22),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -1798,27 +2044,30 @@ class _SeriesEpisodeRow extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 18,
+                      fontSize: 11.8,
                       fontWeight: FontWeight.w900,
                     ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 3),
                   Text(
                     episode.overview,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white60, fontSize: 14),
+                    style: const TextStyle(
+                      color: Colors.white60,
+                      fontSize: 9.8,
+                    ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(width: 18),
+            const SizedBox(width: 8),
             SizedBox(
-              width: 62,
+              width: 38,
               child: Text(
                 episode.runtime == null ? '' : '${episode.runtime}m',
                 textAlign: TextAlign.right,
-                style: const TextStyle(color: Colors.white70, fontSize: 15),
+                style: const TextStyle(color: Colors.white70, fontSize: 10),
               ),
             ),
           ],
@@ -1895,6 +2144,8 @@ void _openStream(
   context.push(
     '/player',
     extra: PlayerPayload(
+      mediaId: item.id,
+      kind: item.kind.name,
       title: item.title,
       streamUrl: stream.url,
       headers: stream.headers,

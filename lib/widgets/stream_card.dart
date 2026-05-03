@@ -33,10 +33,10 @@ class AppStreamCard extends StatelessWidget {
     return FocusableCard(
       selected: selected,
       borderRadius: AppRadius.sm,
-      scale: 1.025,
+      scale: 1.018,
       onPressed: onPressed,
       child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.sm),
+        padding: const EdgeInsets.all(AppSpacing.xs),
         child: Row(
           children: [
             if (artwork != null) ...[
@@ -55,7 +55,7 @@ class AppStreamCard extends StatelessWidget {
                           provider,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: AppTypography.label.copyWith(fontSize: 13),
+                          style: AppTypography.label.copyWith(fontSize: 11.5),
                         ),
                       ),
                       _QualityPill(text: quality, selected: selected),
@@ -73,7 +73,7 @@ class AppStreamCard extends StatelessWidget {
                     primaryMeta,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: AppTypography.metadata.copyWith(fontSize: 12),
+                    style: AppTypography.metadata.copyWith(fontSize: 11),
                   ),
                   if (secondaryMeta.isNotEmpty)
                     Text(
@@ -82,7 +82,7 @@ class AppStreamCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: AppTypography.metadata.copyWith(
                         color: AppColors.textMuted,
-                        fontSize: 11,
+                        fontSize: 10,
                       ),
                     ),
                 ],
@@ -106,7 +106,7 @@ class _QualityPill extends StatelessWidget {
     if (text.isEmpty) return const SizedBox.shrink();
     return Container(
       margin: const EdgeInsets.only(left: AppSpacing.xs),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
         color: selected ? AppColors.accentRed : AppColors.white(.12),
         borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -114,7 +114,7 @@ class _QualityPill extends StatelessWidget {
       child: Text(
         text,
         maxLines: 1,
-        style: AppTypography.label.copyWith(fontSize: 10),
+        style: AppTypography.label.copyWith(fontSize: 9.5),
       ),
     );
   }

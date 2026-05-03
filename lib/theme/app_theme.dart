@@ -28,4 +28,16 @@ class AppTheme {
       ),
     );
   }
+
+  static ThemeData get light {
+    return dark.copyWith(
+      brightness: Brightness.light,
+      scaffoldBackgroundColor: const Color(0xFFF4F4F4),
+      colorScheme: const ColorScheme.light(
+        primary: AppColors.accentRed,
+        surface: Color(0xFFFFFFFF),
+        secondary: Color(0xFF111111),
+      ),
+    );
+  }
 }

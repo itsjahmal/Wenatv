@@ -56,7 +56,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(
                 TvLayout.safeHorizontal,
-                TvLayout.safeVertical,
+                AppSpacing.md,
                 TvLayout.safeHorizontal,
                 AppSpacing.lg,
               ),
@@ -67,12 +67,12 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     'Search WenaTV',
                     style: Theme.of(context).textTheme.headlineLarge,
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 10),
                   TextField(
                     controller: _controller,
                     autofocus: true,
                     onChanged: _onChanged,
-                    style: const TextStyle(fontSize: 18),
+                    style: const TextStyle(fontSize: 15),
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.search),
                       hintText: 'Movies, series, actors, genres',
@@ -88,7 +88,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 12),
                   Expanded(
                     child: _query.isEmpty
                         ? const Center(

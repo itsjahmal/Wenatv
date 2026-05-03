@@ -7,45 +7,45 @@ class AppTypography {
 
   static const heroTitle = TextStyle(
     color: AppColors.textPrimary,
-    fontSize: 46,
+    fontSize: 40,
     height: 1.05,
     fontWeight: FontWeight.w900,
   );
 
   static const screenTitle = TextStyle(
     color: AppColors.textPrimary,
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: FontWeight.w800,
   );
 
   static const sectionTitle = TextStyle(
     color: AppColors.textPrimary,
-    fontSize: 21,
+    fontSize: 18,
     fontWeight: FontWeight.w800,
   );
 
   static const title = TextStyle(
     color: AppColors.textPrimary,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: FontWeight.w800,
   );
 
   static const body = TextStyle(
     color: Color(0xFFE5E5E5),
-    fontSize: 15,
+    fontSize: 13,
     height: 1.32,
     fontWeight: FontWeight.w400,
   );
 
   static const metadata = TextStyle(
     color: AppColors.textSecondary,
-    fontSize: 13,
+    fontSize: 11.5,
     fontWeight: FontWeight.w500,
   );
 
   static const label = TextStyle(
     color: AppColors.textPrimary,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: FontWeight.w800,
   );
 }

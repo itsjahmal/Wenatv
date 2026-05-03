@@ -8,8 +8,8 @@ import 'app_shadows.dart';
 class AppFocus {
   const AppFocus._();
 
-  static const focusedScale = 1.035;
-  static const subtleScale = 1.02;
+  static const focusedScale = 1.025;
+  static const subtleScale = 1.012;
   static const duration = AppAnimations.normal;
 
   static BoxDecoration cardDecoration(

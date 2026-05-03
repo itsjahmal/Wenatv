@@ -31,10 +31,10 @@ class EpisodeTile extends StatelessWidget {
     return FocusableCard(
       selected: selected,
       borderRadius: AppRadius.sm,
-      scale: 1.02,
+      scale: 1.012,
       onPressed: onPressed,
       child: Container(
-        height: 55,
+        height: 46,
         padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
         child: Row(
           children: [

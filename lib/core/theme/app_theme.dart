@@ -22,4 +22,5 @@ class WenaTheme {
   static const soft = AppColors.surfaceElevated;
 
   static ThemeData get dark => AppTheme.dark;
+  static ThemeData get light => AppTheme.light;
 }

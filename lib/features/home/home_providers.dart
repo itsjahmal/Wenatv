@@ -1,15 +1,74 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
 import '../../data/models/media_item.dart';
 import '../../data/repositories/tmdb_repository.dart';
 import '../providers/provider_js_bridge.dart';
 import '../providers/provider_manager_controller.dart';
 
-final homeRowsProvider = FutureProvider<List<HomeRow>>((ref) async {
-  return _providerRows(
-    ref,
-  ).timeout(const Duration(seconds: 28), onTimeout: () => const []);
-});
+final homeRefreshingProvider = NotifierProvider<HomeRefreshingController, bool>(
+  HomeRefreshingController.new,
+);
+
+class HomeRefreshingController extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void setRefreshing(bool value) => state = value;
+}
+
+final homeRowsProvider =
+    NotifierProvider<HomeRowsController, AsyncValue<List<HomeRow>>>(
+      HomeRowsController.new,
+    );
+
+class HomeRowsController extends Notifier<AsyncValue<List<HomeRow>>> {
+  static const _boxKey = 'home_content_cache';
+  String? _activeCacheKey;
+
+  @override
+  AsyncValue<List<HomeRow>> build() {
+    final active = ref.watch(activeProviderProvider);
+    _activeCacheKey = _cacheKey(active);
+    final cached = _loadCachedRows(_activeCacheKey);
+    unawaited(Future<void>.microtask(refresh));
+    return cached == null ? const AsyncLoading() : AsyncData(cached);
+  }
+
+  Future<void> refresh() async {
+    final active = ref.read(activeProviderProvider);
+    final cacheKey = _cacheKey(active);
+    if (active == null || cacheKey == null) {
+      state = const AsyncData([]);
+      return;
+    }
+
+    final hadData = state.asData?.value.isNotEmpty == true;
+    if (!hadData) state = const AsyncLoading();
+    ref.read(homeRefreshingProvider.notifier).setRefreshing(true);
+    try {
+      final rows = await _providerRowsForActive(
+        active: active,
+        bridge: ref.read(providerJsBridgeProvider),
+        tmdb: ref.read(tmdbRepositoryProvider),
+      ).timeout(const Duration(seconds: 28), onTimeout: () => const []);
+      if (_activeCacheKey != cacheKey) return;
+      final cleanRows = _dedupeRows(rows);
+      if (cleanRows.isNotEmpty) {
+        state = AsyncData(cleanRows);
+        await _saveCachedRows(cacheKey, cleanRows);
+      } else if (!hadData) {
+        state = const AsyncData([]);
+      }
+    } catch (error, stack) {
+      if (!hadData) state = AsyncError(error, stack);
+    } finally {
+      ref.read(homeRefreshingProvider.notifier).setRefreshing(false);
+    }
+  }
+}
 
 final homeProviderStatusProvider = Provider<HomeProviderStatus>((ref) {
   final active = ref.watch(activeProviderProvider);
@@ -33,12 +92,11 @@ final homeProviderStatusProvider = Provider<HomeProviderStatus>((ref) {
   );
 });
 
-Future<List<HomeRow>> _providerRows(Ref ref) async {
-  final active = ref.watch(activeProviderProvider);
-  if (active == null) return const [];
-
-  final bridge = ref.watch(providerJsBridgeProvider);
-  final tmdb = ref.watch(tmdbRepositoryProvider);
+Future<List<HomeRow>> _providerRowsForActive({
+  required ActiveProviderSelection active,
+  required ProviderJsBridge bridge,
+  required TmdbRepository tmdb,
+}) async {
   return _rowsForProvider(
     bridge: bridge,
     tmdb: tmdb,
@@ -340,4 +398,104 @@ class HomeProviderStatus {
 
   final String title;
   final String message;
+}
+
+String? _cacheKey(ActiveProviderSelection? active) {
+  if (active == null) return null;
+  return '${active.sourceUrl}::${active.value}';
+}
+
+List<HomeRow>? _loadCachedRows(String? key) {
+  if (key == null || !Hive.isBoxOpen('wenatv_cache')) return null;
+  try {
+    final raw = Hive.box('wenatv_cache').get(_homeCacheKey(key));
+    if (raw is! Map) return null;
+    final rows = raw['rows'];
+    if (rows is! List) return null;
+    final parsed = [
+      for (final row in rows)
+        if (row is Map) _homeRowFromJson(row),
+    ].nonNulls.toList();
+    return parsed.isEmpty ? null : _dedupeRows(parsed);
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> _saveCachedRows(String key, List<HomeRow> rows) async {
+  if (!Hive.isBoxOpen('wenatv_cache') || rows.isEmpty) return;
+  await Hive.box('wenatv_cache').put(_homeCacheKey(key), {
+    'timestamp': DateTime.now().toIso8601String(),
+    'rows': [for (final row in rows) _homeRowToJson(row)],
+  });
+}
+
+String _homeCacheKey(String key) => '${HomeRowsController._boxKey}:$key';
+
+Map<String, dynamic> _homeRowToJson(HomeRow row) => {
+  'title': row.title,
+  'items': [for (final item in row.items) _mediaItemToJson(item)],
+};
+
+HomeRow? _homeRowFromJson(Map<dynamic, dynamic> json) {
+  final title = json['title']?.toString() ?? '';
+  final rawItems = json['items'];
+  if (title.isEmpty || rawItems is! List) return null;
+  final items = [
+    for (final item in rawItems)
+      if (item is Map) _mediaItemFromJson(item),
+  ].nonNulls.toList();
+  return items.isEmpty ? null : HomeRow(title, items);
+}
+
+Map<String, dynamic> _mediaItemToJson(MediaItem item) => {
+  'id': item.id,
+  'kind': item.kind.name,
+  'title': item.title,
+  'overview': item.overview,
+  'posterPath': item.posterPath,
+  'backdropPath': item.backdropPath,
+  'rating': item.rating,
+  'releaseDate': item.releaseDate,
+  'genres': item.genres,
+  'runtime': item.runtime,
+  'totalSeasons': item.totalSeasons,
+  'externalPosterUrl': item.externalPosterUrl,
+  'externalBackdropUrl': item.externalBackdropUrl,
+  'sourceUrl': item.sourceUrl,
+  'sourceProvider': item.sourceProvider,
+  'sourceProviderName': item.sourceProviderName,
+  'sourceLink': item.sourceLink,
+  'sourceTitle': item.sourceTitle,
+};
+
+MediaItem? _mediaItemFromJson(Map<dynamic, dynamic> json) {
+  final title = json['title']?.toString() ?? '';
+  if (title.isEmpty) return null;
+  final kind = json['kind']?.toString() == 'tv'
+      ? MediaKind.tv
+      : MediaKind.movie;
+  return MediaItem(
+    id: (json['id'] as num?)?.toInt() ?? 0,
+    kind: kind,
+    title: title,
+    overview: json['overview']?.toString() ?? '',
+    posterPath: json['posterPath']?.toString(),
+    backdropPath: json['backdropPath']?.toString(),
+    rating: (json['rating'] as num?)?.toDouble() ?? 0,
+    releaseDate: json['releaseDate']?.toString() ?? '',
+    genres: [
+      for (final genre in (json['genres'] as List?) ?? const [])
+        genre.toString(),
+    ],
+    runtime: (json['runtime'] as num?)?.toInt(),
+    totalSeasons: (json['totalSeasons'] as num?)?.toInt(),
+    externalPosterUrl: json['externalPosterUrl']?.toString(),
+    externalBackdropUrl: json['externalBackdropUrl']?.toString(),
+    sourceUrl: json['sourceUrl']?.toString(),
+    sourceProvider: json['sourceProvider']?.toString(),
+    sourceProviderName: json['sourceProviderName']?.toString(),
+    sourceLink: json['sourceLink']?.toString(),
+    sourceTitle: json['sourceTitle']?.toString(),
+  );
 }

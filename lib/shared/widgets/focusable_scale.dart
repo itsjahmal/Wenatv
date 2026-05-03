@@ -22,10 +22,11 @@ class FocusableScale extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final safeScale = scale.clamp(1.0, 1.03).toDouble();
     return FocusableCard(
       autofocus: autofocus,
       borderRadius: borderRadius,
-      scale: scale,
+      scale: safeScale,
       selected: selected,
       onPressed: onPressed,
       child: child,

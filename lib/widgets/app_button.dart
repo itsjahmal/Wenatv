@@ -44,19 +44,19 @@ class AppButton extends StatelessWidget {
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
-          vertical: AppSpacing.sm,
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.xs,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: primary ? Colors.white : Colors.black, size: 20),
-            const SizedBox(width: AppSpacing.sm),
+            Icon(icon, color: primary ? Colors.white : Colors.black, size: 18),
+            const SizedBox(width: AppSpacing.xs),
             Text(
               label,
               style: AppTypography.label.copyWith(
                 color: primary ? Colors.white : Colors.black,
-                fontSize: 14,
+                fontSize: 12.5,
               ),
             ),
           ],

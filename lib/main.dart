@@ -12,6 +12,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'core/router/app_router.dart';
 import 'core/startup/app_bootstrap.dart';
 import 'core/theme/app_theme.dart';
+import 'features/settings/app_settings_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -69,11 +70,21 @@ class WenaTvApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return MaterialApp.router(
-      title: 'WenaTV',
-      debugShowCheckedModeBanner: false,
-      theme: WenaTheme.dark,
-      routerConfig: ref.watch(appRouterProvider),
+    return FutureBuilder<void>(
+      future: ref.watch(appBootstrapProvider),
+      builder: (context, snapshot) {
+        final settings = snapshot.connectionState == ConnectionState.done
+            ? ref.watch(appSettingsProvider)
+            : const AppSettings();
+        return MaterialApp.router(
+          title: 'WenaTV',
+          debugShowCheckedModeBanner: false,
+          theme: WenaTheme.light,
+          darkTheme: WenaTheme.dark,
+          themeMode: settings.themeMode,
+          routerConfig: ref.watch(appRouterProvider),
+        );
+      },
     );
   }
 }

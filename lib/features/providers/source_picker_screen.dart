@@ -318,7 +318,7 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(54, 34, 54, 30),
+          padding: const EdgeInsets.fromLTRB(38, 24, 38, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -327,7 +327,7 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
                 icon: Icons.arrow_back,
                 onPressed: () => context.pop(),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
               Text(
                 item == null
                     ? 'Choose Source'
@@ -341,10 +341,10 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
                 'Searching installed providers automatically. Select a stream below when results appear.',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: Colors.white70, fontSize: 16),
+                style: TextStyle(color: Colors.white70, fontSize: 13),
               ),
               if (_message != null) ...[
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
                 Text(
                   _message!,
                   maxLines: 2,
@@ -353,7 +353,7 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
                 ),
               ],
               if (!hasDirectProvider) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 WenaButton(
                   label: 'Install MultiStream',
                   icon: Icons.download,
@@ -361,7 +361,7 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
                   onPressed: _loading ? () {} : _installMultiStream,
                 ),
               ],
-              const SizedBox(height: 20),
+              const SizedBox(height: 14),
               Expanded(
                 child: installed.isEmpty
                     ? _EmptyProviders(
@@ -371,7 +371,7 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           SizedBox(
-                            width: 350,
+                            width: 300,
                             child: ListView.separated(
                               itemCount: installed.length,
                               separatorBuilder: (_, __) =>
@@ -384,8 +384,8 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
                                       ? () {}
                                       : () => _resolveInstalled(provider),
                                   child: Container(
-                                    height: 78,
-                                    padding: const EdgeInsets.all(14),
+                                    height: 64,
+                                    padding: const EdgeInsets.all(10),
                                     color: WenaTheme.surface,
                                     child: Row(
                                       children: [
@@ -434,7 +434,7 @@ class _SourcePickerScreenState extends ConsumerState<SourcePickerScreen> {
                               },
                             ),
                           ),
-                          const SizedBox(width: 24),
+                          const SizedBox(width: 16),
                           Expanded(
                             child: _loading
                                 ? _SearchingStreams(
@@ -525,8 +525,8 @@ class _StreamList extends StatelessWidget {
             ),
           ),
           child: Container(
-            height: 72,
-            padding: const EdgeInsets.symmetric(horizontal: 18),
+            height: 58,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
             color: WenaTheme.surface,
             child: Row(
               children: [

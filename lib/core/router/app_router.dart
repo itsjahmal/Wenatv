@@ -9,6 +9,7 @@ import '../../features/player/player_screen.dart';
 import '../../features/search/search_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/splash/animated_splash_screen.dart';
+import '../../features/trailer/trailer_screen.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -55,6 +56,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/player',
         builder: (context, state) =>
             PlayerScreen(payload: state.extra as PlayerPayload?),
+      ),
+      GoRoute(
+        path: '/trailer/:kind/:id',
+        builder: (context, state) => TrailerScreen(
+          id: int.parse(state.pathParameters['id']!),
+          kind: state.pathParameters['kind'] == 'tv'
+              ? MediaKind.tv
+              : MediaKind.movie,
+          title: (state.extra as String?) ?? 'Trailer',
+        ),
       ),
     ],
   );
