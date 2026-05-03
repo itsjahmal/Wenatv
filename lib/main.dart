@@ -13,6 +13,7 @@ import 'core/router/app_router.dart';
 import 'core/startup/app_bootstrap.dart';
 import 'core/theme/app_theme.dart';
 import 'features/settings/app_settings_controller.dart';
+import 'features/tv/native_tv_integration_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -76,13 +77,17 @@ class WenaTvApp extends ConsumerWidget {
         final settings = snapshot.connectionState == ConnectionState.done
             ? ref.watch(appSettingsProvider)
             : const AppSettings();
+        final router = ref.watch(appRouterProvider);
+        if (snapshot.connectionState == ConnectionState.done) {
+          unawaited(NativeTvIntegrationService.initialize(ref, router));
+        }
         return MaterialApp.router(
           title: 'WenaTV',
           debugShowCheckedModeBanner: false,
           theme: WenaTheme.light,
           darkTheme: WenaTheme.dark,
           themeMode: settings.themeMode,
-          routerConfig: ref.watch(appRouterProvider),
+          routerConfig: router,
         );
       },
     );

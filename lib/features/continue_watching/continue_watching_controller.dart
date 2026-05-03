@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import '../player/player_screen.dart';
+import '../tv/native_tv_integration_service.dart';
 
 final continueWatchingProvider =
     NotifierProvider<ContinueWatchingController, List<ContinueWatchingEntry>>(
@@ -157,6 +158,7 @@ class ContinueWatchingController extends Notifier<List<ContinueWatchingEntry>> {
         entry.duration < const Duration(minutes: 1) ||
         entry.progress >= .90) {
       await remove(entry.key);
+      await NativeTvIntegrationService.removeWatchNext(entry.key);
       return;
     }
     final entries = [
@@ -166,6 +168,7 @@ class ContinueWatchingController extends Notifier<List<ContinueWatchingEntry>> {
     ]..sort((a, b) => b.lastWatched.compareTo(a.lastWatched));
     state = entries.take(20).toList();
     await _save();
+    await NativeTvIntegrationService.publishWatchNext(entry);
   }
 
   Future<void> remove(String key) async {
@@ -176,6 +179,7 @@ class ContinueWatchingController extends Notifier<List<ContinueWatchingEntry>> {
     if (next.length == state.length) return;
     state = next;
     await _save();
+    await NativeTvIntegrationService.removeWatchNext(key);
   }
 
   List<ContinueWatchingEntry> _load() {

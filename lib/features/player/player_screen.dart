@@ -214,6 +214,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   _PlayerAspectMode _aspectMode = _PlayerAspectMode.fit;
   PlayerPayload? _activePayload;
   Timer? _hideTimer;
+  Timer? _pausedProgressTimer;
   bool _handlingPlaybackFailure = false;
   bool _englishAudioApplied = false;
   bool _keepAwakeEnabled = false;
@@ -335,7 +336,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       _autoAdvanceStarted = true;
       unawaited(_playNextEpisodeIfAvailable());
     }
+    _syncPausedProgressTimer(value);
     unawaited(_syncKeepAwake(value));
+  }
+
+  void _syncPausedProgressTimer(VideoPlayerValue value) {
+    if (!value.isInitialized || value.isPlaying || value.hasError) {
+      _pausedProgressTimer?.cancel();
+      _pausedProgressTimer = null;
+      return;
+    }
+    _pausedProgressTimer ??= Timer(const Duration(seconds: 20), () {
+      _pausedProgressTimer = null;
+      unawaited(_saveProgress());
+    });
   }
 
   bool _shouldAutoAdvance(VideoPlayerValue value) {
@@ -607,6 +621,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
+    _pausedProgressTimer?.cancel();
     unawaited(_saveProgress());
     unawaited(_setKeepAwake(false));
     _rootFocusNode.dispose();

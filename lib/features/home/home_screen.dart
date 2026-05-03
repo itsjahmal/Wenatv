@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -10,6 +12,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/media_item.dart';
 import '../../data/repositories/tmdb_repository.dart';
 import '../continue_watching/continue_watching_controller.dart';
+import '../tv/native_tv_integration_service.dart';
 import '../watchlist/watchlist_controller.dart';
 import '../../shared/widgets/focusable_scale.dart';
 import '../../shared/widgets/poster_card.dart';
@@ -44,6 +47,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   MediaItem? _hero;
   late final ScrollController _scrollController;
   double _scrollOffset = 0;
+  String? _lastPublishedChannelsKey;
 
   @override
   void initState() {
@@ -104,6 +108,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   }
                   final isHomeSection =
                       widget.section == null || widget.section == 'home';
+                  _publishNativeHomeChannels(
+                    continueWatching: continueWatching,
+                    rows: data,
+                    watchlist: watchlist,
+                  );
                   final hero = isHomeSection
                       ? (_hero ??
                             (visibleRows.isNotEmpty &&
@@ -207,6 +216,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  void _publishNativeHomeChannels({
+    required List<ContinueWatchingEntry> continueWatching,
+    required List<HomeRow> rows,
+    required List<MediaItem> watchlist,
+  }) {
+    final key = [
+      continueWatching.map((entry) => entry.key).join(','),
+      rows
+          .map(
+            (row) =>
+                '${row.title}:${row.items.take(8).map((item) => '${item.kind.name}:${item.id}').join(',')}',
+          )
+          .join('|'),
+      watchlist.map((item) => '${item.kind.name}:${item.id}').join(','),
+    ].join('::');
+    if (_lastPublishedChannelsKey == key) return;
+    _lastPublishedChannelsKey = key;
+    unawaited(
+      NativeTvIntegrationService.publishHomeChannels(
+        continueWatching: continueWatching,
+        homeRows: rows,
+        watchlist: watchlist,
       ),
     );
   }
