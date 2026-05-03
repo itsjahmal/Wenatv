@@ -209,6 +209,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   bool _audioTrackSupport = false;
   List<VideoAudioTrack> _audioTracks = const [];
   List<PlayerSubtitlePayload> _manifestSubtitleTracks = const [];
+  List<PlayerResolvedStream> _manifestQualityStreams = const [];
   String? _selectedAudioTrackId;
   String _selectedSubtitleId = 'off';
   _PlayerAspectMode _aspectMode = _PlayerAspectMode.fit;
@@ -249,6 +250,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     String url, {
     Map<String, String>? headers,
     PlayerPayload? payload,
+    bool allowFallbackOnError = true,
   }) async {
     await _setKeepAwake(false);
     setState(() {
@@ -257,6 +259,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       _audioTrackSupport = false;
       _audioTracks = const [];
       _manifestSubtitleTracks = const [];
+      _manifestQualityStreams = const [];
       _selectedAudioTrackId = null;
       _englishAudioApplied = false;
       _autoAdvanceStarted = false;
@@ -300,6 +303,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         preferredLanguage: settings.preferredAudioLanguage,
       );
       unawaited(_refreshSubtitleTracks());
+      unawaited(_refreshHlsQualityStreams());
       if (settings.subtitlesEnabled) {
         unawaited(
           _refreshSubtitleTracks().then(
@@ -314,7 +318,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       await controller.dispose();
       if (!mounted) return;
       await _setKeepAwake(false);
-      await _handlePlaybackFailure(error.toString());
+      if (allowFallbackOnError) {
+        await _handlePlaybackFailure(error.toString());
+      } else {
+        setState(() {
+          _initializing = false;
+          _error =
+              'Selected quality failed to start. Choose another quality or retry the stream.';
+        });
+      }
     }
   }
 
@@ -540,6 +552,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     for (final stream in _activePayload?.fallbackStreams ?? const []) {
       if (stream.url.isNotEmpty) streams[stream.url] = stream;
     }
+    for (final stream in _manifestQualityStreams) {
+      if (stream.url.isNotEmpty) streams[stream.url] = stream;
+    }
     final sorted = streams.values.toList();
     sorted.sort((a, b) {
       final quality = _qualityValue(b).compareTo(_qualityValue(a));
@@ -606,8 +621,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       subtitles: stream.subtitles,
       currentStream: stream,
       fallbackStreams: fallbacks,
+      startPosition: previousPosition,
     );
-    await _open(stream.url, headers: stream.headers, payload: nextPayload);
+    await _open(
+      stream.url,
+      headers: stream.headers,
+      payload: nextPayload,
+      allowFallbackOnError: false,
+    );
     final nextController = _controller;
     if (nextController != null && nextController.value.isInitialized) {
       if (previousPosition > Duration.zero) {
@@ -650,8 +671,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _scheduleHide();
   }
 
-  void _hideControls() {
-    if (!_controlsVisible || !_playing) return;
+  void _hideControls({bool force = false}) {
+    if (!_controlsVisible || (!_playing && !force)) return;
     setState(() => _controlsVisible = false);
     _rootFocusNode.requestFocus();
   }
@@ -754,7 +775,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         }
         if (_controlsVisible) {
           unawaited(_saveProgress());
-          _hideControls();
+          _hideControls(force: true);
           return KeyEventResult.handled;
         }
         unawaited(_saveProgress());
@@ -791,10 +812,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     } else if (node == _qualityFocusNode) {
       unawaited(_showQualityOptions());
     } else if (node == _aspectFocusNode) {
-      unawaited(_showAspectOptions());
+      _cycleAspectMode();
     } else if (node == _episodesFocusNode && _isSeries) {
       setState(() => _episodePanelVisible = true);
     }
+  }
+
+  void _cycleAspectMode() {
+    final modes = _PlayerAspectMode.values;
+    final next = modes[(modes.indexOf(_aspectMode) + 1) % modes.length];
+    setState(() => _aspectMode = next);
+    _showControls(focusNode: _aspectFocusNode);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Aspect: ${next.label}'),
+          duration: const Duration(milliseconds: 900),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: WenaTheme.red,
+        ),
+      );
   }
 
   Duration _seekDelta(LogicalKeyboardKey key) {
@@ -830,6 +868,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
+          if (_episodePanelVisible) {
+            setState(() => _episodePanelVisible = false);
+            _showControls(focusNode: _episodesFocusNode);
+            return;
+          }
+          if (_controlsVisible) {
+            _hideControls(force: true);
+            return;
+          }
           unawaited(
             _saveProgress().then((_) {
               if (mounted && router.canPop()) router.pop();
@@ -888,7 +935,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                     onAudio: _showAudioOptions,
                     onSubtitles: _showSubtitleOptions,
                     onQuality: _showQualityOptions,
-                    onAspect: _showAspectOptions,
+                    onAspect: _cycleAspectMode,
                     onEpisodes: _isSeries
                         ? () {
                             _hideTimer?.cancel();
@@ -1050,22 +1097,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     );
   }
 
-  Future<void> _showAspectOptions() async {
-    final options = _PlayerAspectMode.values;
-    await _showOptionSheet<_PlayerAspectMode>(
-      title: 'Aspect Ratio',
-      options: options,
-      selected: _aspectMode,
-      labelBuilder: (option, _) => option.label,
-      subtitleBuilder: (option, _) => option.description,
-      isSelected: (option) => option == _aspectMode,
-      onSelected: (option) async {
-        setState(() => _aspectMode = option);
-      },
-    );
-  }
-
   Future<void> _showQualityOptions() async {
+    await _refreshHlsQualityStreams();
     final options = _qualityStreams();
     if (options.isEmpty) {
       await _showOptionSheet<_SimplePlayerOption>(
@@ -1286,6 +1319,77 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     } catch (_) {}
   }
 
+  Future<void> _refreshHlsQualityStreams() async {
+    final payload = _activePayload;
+    final url = payload?.streamUrl;
+    if (url == null || url.isEmpty || !url.toLowerCase().contains('.m3u8')) {
+      if (mounted && _manifestQualityStreams.isNotEmpty) {
+        setState(() => _manifestQualityStreams = const []);
+      }
+      return;
+    }
+    try {
+      final tracks = await _discoverHlsQualityStreams(
+        url,
+        _normalizedHeaders(payload?.headers),
+      );
+      if (!mounted || payload != _activePayload) return;
+      setState(() => _manifestQualityStreams = tracks);
+    } catch (_) {}
+  }
+
+  Future<List<PlayerResolvedStream>> _discoverHlsQualityStreams(
+    String url,
+    Map<String, String> headers,
+  ) async {
+    final uri = Uri.parse(url);
+    final response = await Dio().get<String>(
+      uri.toString(),
+      options: Options(
+        responseType: ResponseType.plain,
+        headers: headers,
+        followRedirects: true,
+        receiveTimeout: const Duration(seconds: 12),
+        sendTimeout: const Duration(seconds: 8),
+      ),
+    );
+    final lines = (response.data ?? '').split('\n');
+    final streams = <PlayerResolvedStream>[];
+    Map<String, String>? pendingAttrs;
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      if (line.startsWith('#EXT-X-STREAM-INF:')) {
+        pendingAttrs = _parseHlsAttributes(
+          line.substring(line.indexOf(':') + 1),
+        );
+        continue;
+      }
+      if (line.isEmpty || line.startsWith('#') || pendingAttrs == null) {
+        continue;
+      }
+      final variantUrl = uri.resolve(line).toString();
+      final quality = _hlsQualityLabel(pendingAttrs);
+      streams.add(
+        PlayerResolvedStream(
+          url: variantUrl,
+          headers: headers,
+          subtitles: _availableSubtitleTracks(),
+          providerName: _activePayload?.currentStream?.providerName,
+          quality: quality,
+          format: 'HLS',
+          label: quality,
+          displayTitle: quality,
+        ),
+      );
+      pendingAttrs = null;
+    }
+    final byUrl = <String, PlayerResolvedStream>{};
+    for (final stream in streams) {
+      byUrl[stream.url] = stream;
+    }
+    return byUrl.values.toList();
+  }
+
   Future<List<PlayerSubtitlePayload>> _discoverHlsSubtitleTracks(
     String url,
     Map<String, String> headers,
@@ -1473,7 +1577,7 @@ class _AspectVideo extends StatelessWidget {
   Widget build(BuildContext context) {
     final value = controller.value;
     final aspectRatio = value.aspectRatio == 0 ? 16 / 9 : value.aspectRatio;
-    if (mode == _PlayerAspectMode.fit) {
+    if (mode == _PlayerAspectMode.fit || mode == _PlayerAspectMode.original) {
       return Center(
         child: AspectRatio(
           aspectRatio: aspectRatio,
@@ -2622,7 +2726,8 @@ class _SimplePlayerOption {
 enum _PlayerAspectMode {
   fit('Fit', 'Show the full video without cropping.', BoxFit.contain),
   fill('Fill', 'Fill the TV screen and crop edges if needed.', BoxFit.cover),
-  stretch('Stretch', 'Stretch video to the screen bounds.', BoxFit.fill);
+  stretch('Stretch', 'Stretch video to the screen bounds.', BoxFit.fill),
+  original('Default', 'Use the player default fit mode.', BoxFit.contain);
 
   const _PlayerAspectMode(this.label, this.description, this.boxFit);
 
@@ -2706,6 +2811,24 @@ String _cleanQuality(String? quality, String fallback) {
   final clean = (quality ?? '').trim();
   if (clean.isEmpty || clean.toLowerCase() == 'auto') return 'AUTO';
   return clean.toUpperCase();
+}
+
+String _hlsQualityLabel(Map<String, String> attrs) {
+  final resolution = attrs['RESOLUTION'] ?? '';
+  final heightMatch = RegExp(
+    r'x(\d{3,4})',
+    caseSensitive: false,
+  ).firstMatch(resolution);
+  if (heightMatch != null) return '${heightMatch.group(1)}P';
+  final bandwidth = int.tryParse(attrs['BANDWIDTH'] ?? '');
+  if (bandwidth != null && bandwidth > 0) {
+    if (bandwidth >= 12000000) return '2160P';
+    if (bandwidth >= 5000000) return '1080P';
+    if (bandwidth >= 2500000) return '720P';
+    if (bandwidth >= 900000) return '480P';
+    return '360P';
+  }
+  return 'HLS';
 }
 
 List<PlayerEpisodePayload> _mergeEpisodes(
