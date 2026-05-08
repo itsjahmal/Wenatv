@@ -1,8 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:youtube_player_flutter/youtube_player_flutter.dart';
+import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/media_item.dart';
@@ -53,12 +55,7 @@ class TrailerScreen extends ConsumerWidget {
             message: 'Trailer could not be loaded right now.',
           ),
           data: (videoId) {
-            if (videoId == null ||
-                videoId.isEmpty ||
-                YoutubePlayer.convertUrlToId(
-                      'https://www.youtube.com/watch?v=$videoId',
-                    ) ==
-                    null) {
+            if (videoId == null || videoId.isEmpty) {
               return _TrailerMessage(
                 title: title,
                 message: 'No playable trailer is available for this title.',
@@ -85,43 +82,42 @@ class _TrailerPlayer extends StatefulWidget {
 class _TrailerPlayerState extends State<_TrailerPlayer> {
   late final YoutubePlayerController _controller;
   final _focusNode = FocusNode(debugLabel: 'trailer-root');
-  bool _ready = false;
   bool _error = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = YoutubePlayerController(
-      initialVideoId: widget.videoId,
-      flags: const YoutubePlayerFlags(
-        autoPlay: true,
+    _controller = YoutubePlayerController.fromVideoId(
+      videoId: widget.videoId,
+      autoPlay: true,
+      params: const YoutubePlayerParams(
         mute: false,
-        hideControls: false,
-        controlsVisibleAtStart: true,
+        loop: false,
+        showControls: true,
+        showFullscreenButton: false,
         enableCaption: true,
-        forceHD: true,
+        strictRelatedVideos: true,
       ),
-    )..addListener(_onPlayerChanged);
-  }
-
-  void _onPlayerChanged() {
-    final value = _controller.value;
-    if (!_ready && value.isReady && mounted) {
-      setState(() => _ready = true);
-      _controller.play();
-    }
-    if (!_error && value.hasError && mounted) {
-      setState(() => _error = true);
-    }
+    );
+    _controller.listen((event) {
+      if (!mounted) return;
+      if (event.error != YoutubeError.none && !_error) {
+        setState(() => _error = true);
+      }
+    });
   }
 
   @override
   void dispose() {
-    _controller.removeListener(_onPlayerChanged);
-    _controller.pause();
-    _controller.dispose();
+    _controller.close();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  Future<void> _seekRelative(double offsetSeconds) async {
+    final current = await _controller.currentTime;
+    final target = (current + offsetSeconds).clamp(0.0, double.infinity);
+    await _controller.seekTo(seconds: target, allowSeekAhead: true);
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -135,12 +131,16 @@ class _TrailerPlayerState extends State<_TrailerPlayer> {
         return KeyEventResult.handled;
       case LogicalKeyboardKey.select:
       case LogicalKeyboardKey.enter:
-        final state = _controller.value.playerState;
-        if (state == PlayerState.playing) {
-          _controller.pause();
-        } else {
-          _controller.play();
-        }
+        // Toggle play/pause via the iframe API
+        _controller.value.playerState == PlayerState.playing
+            ? _controller.pauseVideo()
+            : _controller.playVideo();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowLeft:
+        unawaited(_seekRelative(-10));
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowRight:
+        unawaited(_seekRelative(10));
         return KeyEventResult.handled;
       default:
         return KeyEventResult.ignored;
@@ -161,17 +161,12 @@ class _TrailerPlayerState extends State<_TrailerPlayer> {
             Center(
               child: AspectRatio(
                 aspectRatio: 16 / 9,
-                child: YoutubePlayer(
+                child: YoutubePlayerScaffold(
                   controller: _controller,
-                  showVideoProgressIndicator: true,
-                  progressIndicatorColor: WenaTheme.red,
+                  builder: (context, player) => player,
                 ),
               ),
             ),
-            if (!_ready && !_error)
-              const Center(
-                child: CircularProgressIndicator(color: WenaTheme.red),
-              ),
             if (_error) const _TrailerErrorOverlay(),
           ],
         ),

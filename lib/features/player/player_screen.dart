@@ -2,11 +2,13 @@ import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../core/theme/app_theme.dart';
@@ -50,12 +52,14 @@ class PlayerSubtitlePayload {
     required this.label,
     required this.url,
     this.language,
+    this.format,
   });
 
   final String id;
   final String label;
   final String url;
   final String? language;
+  final String? format;
 }
 
 class PlayerEpisodePayload {
@@ -178,6 +182,130 @@ class PlayerPayload {
   }
 }
 
+class _NativePlayerSource {
+  const _NativePlayerSource({
+    required this.url,
+    required this.headers,
+    required this.subtitles,
+    required this.startPosition,
+  });
+
+  final String url;
+  final Map<String, String> headers;
+  final List<PlayerSubtitlePayload> subtitles;
+  final Duration startPosition;
+
+  Map<String, Object?> toCreationParams() => {
+    'url': url,
+    'headers': headers,
+    'startPositionMs': startPosition.inMilliseconds,
+    'playWhenReady': true,
+    'subtitles': [
+      for (final subtitle in subtitles)
+        {
+          'id': subtitle.id,
+          'label': subtitle.label,
+          'language': subtitle.language,
+          'url': subtitle.url,
+          'format': subtitle.format,
+        },
+    ],
+  };
+}
+
+class _NativeAudioTrack {
+  const _NativeAudioTrack({
+    required this.id,
+    required this.label,
+    required this.language,
+    required this.codec,
+    required this.selected,
+    this.channelCount,
+    this.sampleRate,
+    this.bitrate,
+  });
+
+  factory _NativeAudioTrack.fromMap(Map<dynamic, dynamic> map) {
+    return _NativeAudioTrack(
+      id: map['id']?.toString() ?? '',
+      label: map['label']?.toString() ?? '',
+      language: map['language']?.toString() ?? '',
+      codec: map['codec']?.toString() ?? '',
+      selected: map['selected'] == true,
+      channelCount: (map['channelCount'] as num?)?.toInt(),
+      sampleRate: (map['sampleRate'] as num?)?.toInt(),
+      bitrate: (map['bitrate'] as num?)?.toInt(),
+    );
+  }
+
+  final String id;
+  final String label;
+  final String language;
+  final String codec;
+  final bool selected;
+  final int? channelCount;
+  final int? sampleRate;
+  final int? bitrate;
+}
+
+class _NativeSubtitleTrack {
+  const _NativeSubtitleTrack({
+    required this.id,
+    required this.label,
+    required this.language,
+    required this.mimeType,
+    required this.selected,
+  });
+
+  factory _NativeSubtitleTrack.fromMap(Map<dynamic, dynamic> map) {
+    return _NativeSubtitleTrack(
+      id: map['id']?.toString() ?? '',
+      label: map['label']?.toString() ?? '',
+      language: map['language']?.toString() ?? '',
+      mimeType: map['mimeType']?.toString() ?? '',
+      selected: map['selected'] == true,
+    );
+  }
+
+  final String id;
+  final String label;
+  final String language;
+  final String mimeType;
+  final bool selected;
+}
+
+class _NativeExoPlayerController {
+  _NativeExoPlayerController(this.viewId, this.onEvent) {
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'event' && call.arguments is Map) {
+        onEvent(Map<dynamic, dynamic>.from(call.arguments as Map));
+      }
+    });
+  }
+
+  final int viewId;
+  final ValueChanged<Map<dynamic, dynamic>> onEvent;
+  late final MethodChannel _channel = MethodChannel(
+    'tv.wena.app/exo_player/$viewId',
+  );
+
+  Future<void> play() => _channel.invokeMethod('play');
+  Future<void> pause() => _channel.invokeMethod('pause');
+  Future<void> seekTo(Duration position) => _channel.invokeMethod('seekTo', {
+    'positionMs': position.inMilliseconds,
+  });
+  Future<void> setAudioTrack(String id) =>
+      _channel.invokeMethod('setAudioTrack', {'id': id});
+  Future<void> setSubtitleTrack(String id) =>
+      _channel.invokeMethod('setSubtitleTrack', {'id': id});
+  Future<void> setAspectMode(_PlayerAspectMode mode) =>
+      _channel.invokeMethod('setAspectMode', {'mode': mode.name});
+
+  Future<void> dispose() async {
+    _channel.setMethodCallHandler(null);
+  }
+}
+
 class PlayerScreen extends ConsumerStatefulWidget {
   const PlayerScreen({super.key, this.payload});
 
@@ -189,7 +317,9 @@ class PlayerScreen extends ConsumerStatefulWidget {
 
 class _PlayerScreenState extends ConsumerState<PlayerScreen>
     with WidgetsBindingObserver {
-  VideoPlayerController? _controller;
+  _NativeExoPlayerController? _player;
+  _NativePlayerSource? _nativeSource;
+  int _nativeViewGeneration = 0;
   final _rootFocusNode = FocusNode(debugLabel: 'player-root');
   final _progressFocusNode = FocusNode(debugLabel: 'player-progress');
   final _audioFocusNode = FocusNode(debugLabel: 'player-audio');
@@ -207,7 +337,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _audioTrackSupport = false;
-  List<VideoAudioTrack> _audioTracks = const [];
+  List<_NativeAudioTrack> _audioTracks = const [];
+  List<_NativeSubtitleTrack> _playerSubtitleTracks = const [];
   List<PlayerSubtitlePayload> _manifestSubtitleTracks = const [];
   List<PlayerResolvedStream> _manifestQualityStreams = const [];
   String? _selectedAudioTrackId;
@@ -253,11 +384,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     bool allowFallbackOnError = true,
   }) async {
     await _setKeepAwake(false);
+    await _disposeActivePlayer();
     setState(() {
       _initializing = true;
       _error = null;
       _audioTrackSupport = false;
       _audioTracks = const [];
+      _playerSubtitleTracks = const [];
       _manifestSubtitleTracks = const [];
       _manifestQualityStreams = const [];
       _selectedAudioTrackId = null;
@@ -267,93 +400,123 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       _trackRefreshGeneration++;
       if (payload != null) _activePayload = payload;
     });
-    final previous = _controller;
-    _controller = null;
-    await previous?.dispose();
-    final controller = VideoPlayerController.networkUrl(
-      Uri.parse(url),
-      httpHeaders: _normalizedHeaders(headers),
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+    _nativeSource = _NativePlayerSource(
+      url: url,
+      headers: _normalizedHeaders(headers),
+      subtitles: _availableSubtitleTracks(),
+      startPosition:
+          (payload ?? _activePayload)?.startPosition ?? Duration.zero,
     );
-    controller.addListener(_onVideoChanged);
+    _nativeViewGeneration++;
+    _logPlayerDebug(
+      'open url=$url format=${(payload ?? _activePayload)?.currentStream?.format ?? (payload ?? _activePayload)?.currentStream?.url ?? ''} providerSubtitles=${(payload ?? _activePayload)?.subtitles.length ?? 0}',
+    );
+    if (!mounted) return;
+    setState(() {});
+    unawaited(_refreshHlsQualityStreams());
+    unawaited(_ensureEpisodesLoaded());
+    _scheduleTrackRefreshes(_trackRefreshGeneration);
+  }
 
-    try {
-      await controller.initialize().timeout(const Duration(seconds: 22));
-      final startPosition = (payload ?? _activePayload)?.startPosition;
-      if (startPosition != null &&
-          startPosition > const Duration(seconds: 2) &&
-          startPosition < controller.value.duration) {
-        await controller.seekTo(startPosition);
-      }
-      await controller.play();
-      if (!mounted) {
-        await controller.dispose();
-        return;
-      }
-      setState(() {
-        _controller = controller;
-        _initializing = false;
-        _playing = controller.value.isPlaying;
-        _position = controller.value.position;
-        _duration = controller.value.duration;
-      });
-      unawaited(_syncKeepAwake(controller.value));
-      final settings = ref.read(appSettingsProvider);
-      await _refreshAudioTracks(
-        preferredLanguage: settings.preferredAudioLanguage,
-      );
-      unawaited(_refreshSubtitleTracks());
-      unawaited(_refreshHlsQualityStreams());
-      if (settings.subtitlesEnabled) {
-        unawaited(
-          _refreshSubtitleTracks().then(
-            (_) => _applyPreferredSubtitle(settings.preferredSubtitleLanguage),
-          ),
+  Future<void> _disposeActivePlayer() async {
+    final player = _player;
+    _player = null;
+    await player?.dispose();
+  }
+
+  void _onNativeViewCreated(int viewId) {
+    final previous = _player;
+    unawaited(previous?.dispose());
+    _player = _NativeExoPlayerController(viewId, _onNativePlayerEvent);
+    unawaited(_player?.setAspectMode(_aspectMode));
+  }
+
+  void _onNativePlayerEvent(Map<dynamic, dynamic> event) {
+    if (!mounted) return;
+    final type = event['type']?.toString();
+    switch (type) {
+      case 'state':
+        final position = Duration(
+          milliseconds: (event['positionMs'] as num?)?.toInt() ?? 0,
         );
-      }
-      unawaited(_ensureEpisodesLoaded());
-      _scheduleTrackRefreshes(_trackRefreshGeneration);
-    } catch (error) {
-      controller.removeListener(_onVideoChanged);
-      await controller.dispose();
-      if (!mounted) return;
-      await _setKeepAwake(false);
-      if (allowFallbackOnError) {
-        await _handlePlaybackFailure(error.toString());
-      } else {
+        final duration = Duration(
+          milliseconds: (event['durationMs'] as num?)?.toInt() ?? 0,
+        );
         setState(() {
-          _initializing = false;
-          _error =
-              'Selected quality failed to start. Choose another quality or retry the stream.';
+          _position = position;
+          _duration = duration;
+          _playing = event['playing'] == true;
+          _buffering = event['buffering'] == true;
+          if (event['ready'] == true) _initializing = false;
         });
-      }
+        if (_shouldAutoAdvance()) {
+          _autoAdvanceStarted = true;
+          unawaited(_playNextEpisodeIfAvailable());
+        }
+        _syncPausedProgressTimer();
+        unawaited(_syncKeepAwake());
+        break;
+      case 'tracks':
+        final audio = ((event['audio'] as List?) ?? const [])
+            .whereType<Map>()
+            .map(_NativeAudioTrack.fromMap)
+            .where((track) => track.id.isNotEmpty)
+            .toList();
+        final subtitles = ((event['subtitles'] as List?) ?? const [])
+            .whereType<Map>()
+            .map(_NativeSubtitleTrack.fromMap)
+            .where((track) => track.id.isNotEmpty)
+            .toList();
+        _logPlayerDebug('exo audio tracks=$audio');
+        _logPlayerDebug('exo subtitle tracks=$subtitles');
+        setState(() {
+          _audioTracks = _dedupeAudioTracks(audio);
+          _playerSubtitleTracks = _dedupeSubtitleTracks(subtitles);
+          _audioTrackSupport = _audioTracks.length > 1;
+          final selectedAudio = [
+            for (final track in _audioTracks)
+              if (track.selected) track.id,
+          ];
+          final selectedSubtitle = [
+            for (final track in _playerSubtitleTracks)
+              if (track.selected) track.id,
+          ];
+          _selectedAudioTrackId = selectedAudio.isNotEmpty
+              ? selectedAudio.first
+              : (_audioTracks.isNotEmpty ? _audioTracks.first.id : null);
+          _selectedSubtitleId = selectedSubtitle.isNotEmpty
+              ? selectedSubtitle.first
+              : _selectedSubtitleId;
+        });
+        final settings = ref.read(appSettingsProvider);
+        if (!_englishAudioApplied) {
+          unawaited(
+            _refreshAudioTracks(
+              preferredLanguage: settings.preferredAudioLanguage,
+            ),
+          );
+        }
+        if (settings.subtitlesEnabled && _selectedSubtitleId == 'off') {
+          unawaited(_applyPreferredSubtitle(settings.preferredSubtitleLanguage));
+        }
+        break;
+      case 'error':
+        final message = event['message']?.toString() ?? 'Playback failed';
+        _logPlayerDebug('exo error=$message');
+        unawaited(_setKeepAwake(false));
+        unawaited(_handlePlaybackFailure(message));
+        break;
+      case 'ended':
+        if (_shouldAutoAdvance()) {
+          _autoAdvanceStarted = true;
+          unawaited(_playNextEpisodeIfAvailable());
+        }
+        break;
     }
   }
 
-  void _onVideoChanged() {
-    final value = _controller?.value;
-    if (!mounted || value == null) return;
-    if (value.hasError && _error == null) {
-      unawaited(_setKeepAwake(false));
-      unawaited(_handlePlaybackFailure(value.errorDescription));
-      return;
-    }
-    setState(() {
-      _playing = value.isPlaying;
-      _buffering = value.isBuffering;
-      _position = value.position;
-      _duration = value.duration;
-    });
-    if (_shouldAutoAdvance(value)) {
-      _autoAdvanceStarted = true;
-      unawaited(_playNextEpisodeIfAvailable());
-    }
-    _syncPausedProgressTimer(value);
-    unawaited(_syncKeepAwake(value));
-  }
-
-  void _syncPausedProgressTimer(VideoPlayerValue value) {
-    if (!value.isInitialized || value.isPlaying || value.hasError) {
+  void _syncPausedProgressTimer() {
+    if (_player == null || _playing || _error != null) {
       _pausedProgressTimer?.cancel();
       _pausedProgressTimer = null;
       return;
@@ -364,14 +527,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     });
   }
 
-  bool _shouldAutoAdvance(VideoPlayerValue value) {
+  bool _shouldAutoAdvance() {
     if (!_isSeries ||
         _autoAdvanceStarted ||
         !ref.read(appSettingsProvider).autoplayNextEpisode ||
-        value.duration <= Duration.zero) {
+        _duration <= Duration.zero) {
       return false;
     }
-    return value.position >= value.duration - const Duration(milliseconds: 700);
+    return _position >= _duration - const Duration(milliseconds: 700);
   }
 
   Future<void> _playNextEpisodeIfAvailable() async {
@@ -426,8 +589,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      final value = _controller?.value;
-      if (value != null) unawaited(_syncKeepAwake(value));
+      unawaited(_syncKeepAwake());
       return;
     }
     if (state == AppLifecycleState.paused ||
@@ -439,12 +601,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     }
   }
 
-  Future<void> _syncKeepAwake(VideoPlayerValue value) async {
+  Future<void> _syncKeepAwake() async {
     final ended =
-        value.duration > Duration.zero &&
-        value.position >= value.duration - const Duration(milliseconds: 500);
+        _duration > Duration.zero &&
+        _position >= _duration - const Duration(milliseconds: 500);
     final shouldKeepAwake =
-        value.isInitialized && value.isPlaying && !value.hasError && !ended;
+        _player != null && _playing && _error == null && !ended;
     await _setKeepAwake(shouldKeepAwake);
   }
 
@@ -460,17 +622,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     } catch (_) {}
   }
 
+  void _logPlayerDebug(String message) {
+    debugPrint('[WenaTV Player] $message');
+  }
+
   Future<void> _saveProgress() async {
     final payload = _activePayload;
-    final controller = _controller;
     if (payload == null ||
-        controller == null ||
-        !controller.value.isInitialized ||
+        _player == null ||
         !ref.read(appSettingsProvider).resumePlayback) {
       return;
     }
-    final position = controller.value.position;
-    final duration = controller.value.duration;
+    final position = _position;
+    final duration = _duration;
     final stream = payload.currentStream;
     final key = _continueWatchingKey(payload);
     await ref
@@ -523,11 +687,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   }
 
   void _scheduleTrackRefreshes(int generation) {
+    // Fix 6: Reduced from 4 scheduled refreshes to 2 (at 1s and 5s).
+    // The original 4-refresh schedule caused 4 spurious setState calls per
+    // stream open. On Android TV this manifested as brief UI stalls during
+    // the first 7 seconds of playback. 2 refreshes still catches tracks that
+    // load late while eliminating half the unnecessary rebuilds.
     for (final delay in const [
-      Duration(milliseconds: 700),
-      Duration(seconds: 2),
-      Duration(seconds: 4),
-      Duration(seconds: 7),
+      Duration(seconds: 1),
+      Duration(seconds: 5),
     ]) {
       unawaited(
         Future<void>.delayed(delay, () async {
@@ -608,9 +775,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   Future<void> _switchQuality(PlayerResolvedStream stream) async {
     if (stream.url == _activePayload?.streamUrl) return;
-    final controller = _controller;
-    final previousPosition = controller?.value.position ?? _position;
-    final wasPlaying = controller?.value.isPlaying ?? _playing;
+    final previousPosition = _position;
+    final wasPlaying = _playing;
     final fallbacks = [
       for (final item in _qualityStreams())
         if (item.url != stream.url) item,
@@ -629,13 +795,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       payload: nextPayload,
       allowFallbackOnError: false,
     );
-    final nextController = _controller;
-    if (nextController != null && nextController.value.isInitialized) {
-      if (previousPosition > Duration.zero) {
-        await nextController.seekTo(previousPosition);
-      }
-      if (wasPlaying) await nextController.play();
-    }
+    if (!wasPlaying) unawaited(_player?.pause());
   }
 
   @override
@@ -652,8 +812,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _qualityFocusNode.dispose();
     _aspectFocusNode.dispose();
     _episodesFocusNode.dispose();
-    _controller?.removeListener(_onVideoChanged);
-    _controller?.dispose();
+    unawaited(_disposeActivePlayer());
     super.dispose();
   }
 
@@ -822,6 +981,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     final modes = _PlayerAspectMode.values;
     final next = modes[(modes.indexOf(_aspectMode) + 1) % modes.length];
     setState(() => _aspectMode = next);
+    unawaited(_player?.setAspectMode(next));
     _showControls(focusNode: _aspectFocusNode);
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -854,10 +1014,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   @override
   Widget build(BuildContext context) {
     final payload = _activePayload;
-    final controller = _controller;
-    final hasVideo = controller != null && controller.value.isInitialized;
-    final isPaused = hasVideo && !controller.value.isPlaying;
-    final settings = ref.watch(appSettingsProvider);
+    final hasVideo = _nativeSource != null && _error == null;
+    final isPaused = hasVideo && !_playing;
     final router = GoRouter.of(context);
 
     return Focus(
@@ -891,23 +1049,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
               if (payload?.streamUrl == null)
                 const _NoStreamPreview()
               else if (hasVideo)
-                _AspectVideo(controller: controller, mode: _aspectMode),
-              if (hasVideo && _selectedSubtitleId != 'off')
-                Positioned(
-                  left: 80,
-                  right: 80,
-                  bottom: _controlsVisible ? 124 : 48,
-                  child: ClosedCaption(
-                    text: controller.value.caption.text,
-                    textStyle: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                      shadows: [
-                        Shadow(color: Colors.black, blurRadius: 8),
-                        Shadow(color: Colors.black, blurRadius: 14),
-                      ],
-                    ).copyWith(fontSize: 21 * settings.subtitleScale),
-                  ),
+                _AspectVideo(
+                  key: ValueKey(_nativeViewGeneration),
+                  source: _nativeSource!,
+                  mode: _aspectMode,
+                  onViewCreated: _onNativeViewCreated,
                 ),
               if (isPaused && _controlsVisible)
                 _PauseBackdrop(artworkUrl: payload?.artworkUrl),
@@ -977,34 +1123,32 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   }
 
   void _togglePlayPause() {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    controller.value.isPlaying
-        ? unawaited(controller.pause())
-        : unawaited(controller.play());
+    final player = _player;
+    if (player == null) return;
+    _playing ? unawaited(player.pause()) : unawaited(player.play());
     _showControls(focusNode: _progressFocusNode);
   }
 
   void _seekBy(Duration delta, {bool focusProgress = false}) {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
+    final player = _player;
+    if (player == null) return;
     final rawTarget = _position + delta;
     final target = rawTarget < Duration.zero
         ? Duration.zero
         : rawTarget > _duration
         ? _duration
         : rawTarget;
-    unawaited(controller.seekTo(target));
+    unawaited(player.seekTo(target));
     _showControls(focusNode: focusProgress ? _progressFocusNode : null);
   }
 
   void _seekToFraction(double fraction) {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
+    final player = _player;
+    if (player == null) return;
     final target = Duration(
       milliseconds: (_duration.inMilliseconds * fraction).round(),
     );
-    unawaited(controller.seekTo(target));
+    unawaited(player.seekTo(target));
     _showControls(focusNode: _progressFocusNode);
   }
 
@@ -1019,8 +1163,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         options: const [
           _SimplePlayerOption(
             id: 'default',
-            title: 'Default Audio',
-            subtitle: 'The stream exposes its default audio track only.',
+            title: 'Only one audio track available',
+            subtitle:
+                'No alternate audio languages were exposed by the stream.',
           ),
         ],
         selected: const _SimplePlayerOption(id: 'default', title: ''),
@@ -1031,7 +1176,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       );
       return;
     }
-    await _showOptionSheet<VideoAudioTrack>(
+    await _showOptionSheet<_NativeAudioTrack>(
       title: 'Audio',
       options: options,
       selected: options.firstWhere(
@@ -1040,8 +1185,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       ),
       labelBuilder: _audioTrackTitle,
       subtitleBuilder: _audioTrackSubtitle,
-      isSelected: (track) =>
-          track.id == _selectedAudioTrackId || track.isSelected,
+      isSelected: (track) => track.id == _selectedAudioTrackId,
       onSelected: (track) async {
         await _selectAudioTrack(track, userInitiated: true);
       },
@@ -1050,18 +1194,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   Future<void> _showSubtitleOptions() async {
     await _refreshSubtitleTracks();
-    final subtitleTracks = _availableSubtitleTracks();
+    final subtitleTracks = _subtitleOptions();
     final options = [
       _SimplePlayerOption(
         id: 'off',
         title: 'Off',
         subtitle: 'Disable subtitle rendering.',
       ),
+      const _SimplePlayerOption(
+        id: 'auto',
+        title: 'Auto',
+        subtitle: 'Use the stream default subtitle track.',
+      ),
       for (final track in subtitleTracks)
         _SimplePlayerOption(
           id: track.id,
-          title: _subtitleTitle(track),
-          subtitle: _subtitleSubtitle(track),
+          title: track.title,
+          subtitle: track.subtitle,
         ),
     ];
     await _showOptionSheet<_SimplePlayerOption>(
@@ -1075,25 +1224,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       subtitleBuilder: (option, _) => option.subtitle,
       isSelected: (option) => option.id == _selectedSubtitleId,
       emptyHint: subtitleTracks.isEmpty
-          ? 'No provider or HLS subtitle tracks were found for this stream.'
+          ? 'No subtitles available for this stream.'
           : null,
-      onSelected: (option) async {
-        setState(() => _selectedSubtitleId = option.id);
-        if (option.id == 'off') {
-          await _controller?.setClosedCaptionFile(null);
-          return;
-        }
-        final track = subtitleTracks.firstWhere(
-          (item) => item.id == option.id,
-          orElse: () => subtitleTracks.first,
-        );
-        try {
-          await _controller?.setClosedCaptionFile(_loadSubtitle(track));
-        } catch (_) {
-          if (mounted) setState(() => _selectedSubtitleId = 'off');
-          await _controller?.setClosedCaptionFile(null);
-        }
-      },
+      onSelected: (option) => _selectSubtitleOption(option.id),
     );
   }
 
@@ -1208,62 +1341,32 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   Future<void> _refreshAudioTracks({
     String preferredLanguage = 'English',
   }) async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    final supported = controller.isAudioTrackSupportAvailable();
-    if (!supported) {
-      if (!mounted) return;
-      setState(() {
-        _audioTrackSupport = false;
-        _audioTracks = const [];
-        _selectedAudioTrackId = null;
-      });
-      return;
-    }
-    try {
-      var tracks = await controller.getAudioTracks();
-      if (!mounted || controller != _controller) return;
-      tracks = _dedupeAudioTracks(tracks);
-      final shouldApplyPreference =
-          preferredLanguage.toLowerCase() != 'auto' && !_englishAudioApplied;
-      if (shouldApplyPreference) {
-        final preferred = _preferredAudioTrack(tracks, preferredLanguage);
-        if (preferred != null && !preferred.isSelected) {
-          await _selectAudioTrack(preferred, userInitiated: false);
-          await Future<void>.delayed(const Duration(milliseconds: 250));
-          if (!mounted || controller != _controller) return;
-          tracks = _dedupeAudioTracks(await controller.getAudioTracks());
-        }
-        _englishAudioApplied = true;
+    final player = _player;
+    if (player == null) return;
+    final tracks = _audioTracks;
+    final shouldApplyPreference =
+        preferredLanguage.toLowerCase() != 'auto' && !_englishAudioApplied;
+    if (shouldApplyPreference) {
+      final preferred = _preferredAudioTrack(tracks, preferredLanguage);
+      if (preferred != null && preferred.id != _selectedAudioTrackId) {
+        await _selectAudioTrack(preferred, userInitiated: false);
       }
-      String? selectedId;
-      for (final track in tracks) {
-        if (track.isSelected) {
-          selectedId = track.id;
-          break;
-        }
-      }
-      selectedId ??= _selectedAudioTrackId;
-      if (selectedId == null && tracks.isNotEmpty) {
-        selectedId = tracks.first.id;
-      }
-      setState(() {
-        _audioTrackSupport = true;
-        _audioTracks = tracks;
-        _selectedAudioTrackId = selectedId;
-      });
-    } catch (_) {
-      if (!mounted || controller != _controller) return;
-      setState(() {
-        _audioTrackSupport = false;
-        _audioTracks = const [];
-        _selectedAudioTrackId = null;
-      });
+      _englishAudioApplied = true;
     }
   }
 
-  List<VideoAudioTrack> _dedupeAudioTracks(List<VideoAudioTrack> tracks) {
-    final byId = <String, VideoAudioTrack>{};
+  List<_NativeAudioTrack> _dedupeAudioTracks(List<_NativeAudioTrack> tracks) {
+    final byId = <String, _NativeAudioTrack>{};
+    for (final track in tracks) {
+      byId[track.id] = track;
+    }
+    return byId.values.toList();
+  }
+
+  List<_NativeSubtitleTrack> _dedupeSubtitleTracks(
+    List<_NativeSubtitleTrack> tracks,
+  ) {
+    final byId = <String, _NativeSubtitleTrack>{};
     for (final track in tracks) {
       byId[track.id] = track;
     }
@@ -1284,6 +1387,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
             label: track.label,
             language: track.language,
             url: url,
+            format: track.format,
           ),
         );
       }
@@ -1298,6 +1402,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     }
     return byKey.values.toList()
       ..sort((a, b) => _subtitleTitle(a).compareTo(_subtitleTitle(b)));
+  }
+
+  List<_SubtitleOption> _subtitleOptions() {
+    final options = <_SubtitleOption>[];
+    for (final track in _playerSubtitleTracks) {
+      options.add(_SubtitleOption.embedded(track));
+    }
+    final byId = <String, _SubtitleOption>{};
+    for (final option in options) {
+      byId[option.id] = option;
+    }
+    return byId.values.toList()..sort((a, b) => a.title.compareTo(b.title));
+  }
+
+  Future<void> _selectSubtitleOption(String id) async {
+    final player = _player;
+    if (player == null) return;
+    setState(() => _selectedSubtitleId = id);
+    try {
+      await player.setSubtitleTrack(id);
+    } catch (error) {
+      _logPlayerDebug('subtitle selection failed=$error');
+      if (mounted) setState(() => _selectedSubtitleId = 'off');
+      await player.setSubtitleTrack('off');
+    }
   }
 
   Future<void> _refreshSubtitleTracks() async {
@@ -1433,43 +1562,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   }
 
   Future<void> _applyPreferredSubtitle(String language) async {
-    if (language.toLowerCase() == 'auto') return;
-    final tracks = _availableSubtitleTracks();
+    if (language.toLowerCase() == 'auto') {
+      await _selectSubtitleOption('auto');
+      return;
+    }
+    final tracks = _subtitleOptions();
     if (tracks.isEmpty) return;
     final preferred = tracks.firstWhere(
-      (track) => _subtitleMatchesLanguage(track, language),
+      (track) => _subtitleOptionMatchesLanguage(track, language),
       orElse: () => tracks.first,
     );
-    try {
-      await _controller?.setClosedCaptionFile(_loadSubtitle(preferred));
-      if (mounted) setState(() => _selectedSubtitleId = preferred.id);
-    } catch (_) {
-      await _controller?.setClosedCaptionFile(null);
-      if (mounted) setState(() => _selectedSubtitleId = 'off');
-    }
+    await _selectSubtitleOption(preferred.id);
   }
 
   Future<void> _selectAudioTrack(
-    VideoAudioTrack track, {
+    _NativeAudioTrack track, {
     required bool userInitiated,
   }) async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    final before = controller.value.position;
-    final wasPlaying = controller.value.isPlaying;
+    final player = _player;
+    if (player == null) return;
     if (mounted) setState(() => _selectedAudioTrackId = track.id);
-    await controller.selectAudioTrack(track.id);
-    if (!mounted || controller != _controller) return;
-    await Future<void>.delayed(const Duration(milliseconds: 250));
-    if (!mounted || controller != _controller) return;
-    final after = controller.value.position;
-    if (before > const Duration(seconds: 3) &&
-        after < const Duration(seconds: 2)) {
-      await controller.seekTo(before);
-    }
-    if (wasPlaying && !controller.value.isPlaying) {
-      await controller.play();
-    }
+    _logPlayerDebug('select audio=$track');
+    await player.setAudioTrack(track.id);
     if (userInitiated) {
       _englishAudioApplied = true;
       await _refreshAudioTracks();
@@ -1499,102 +1613,62 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       });
     } catch (_) {}
   }
-
-  Future<ClosedCaptionFile> _loadSubtitle(PlayerSubtitlePayload track) async {
-    final uri = Uri.parse(track.url);
-    final response = await Dio().get<String>(
-      uri.toString(),
-      options: Options(
-        responseType: ResponseType.plain,
-        headers: _normalizedHeaders(_activePayload?.headers),
-        followRedirects: true,
-        receiveTimeout: const Duration(seconds: 15),
-        sendTimeout: const Duration(seconds: 10),
-      ),
-    );
-    final contents = _normalizeSubtitleContents(response.data ?? '');
-    final path = Uri.tryParse(track.url)?.path.toLowerCase() ?? '';
-    if (path.endsWith('.m3u8') || contents.trimLeft().startsWith('#EXTM3U')) {
-      return _loadHlsSubtitlePlaylist(uri, contents);
-    }
-    if (path.endsWith('.vtt') || contents.trimLeft().startsWith('WEBVTT')) {
-      return WebVTTCaptionFile(contents);
-    }
-    return SubRipCaptionFile(contents);
-  }
-
-  Future<ClosedCaptionFile> _loadHlsSubtitlePlaylist(
-    Uri playlistUri,
-    String playlist,
-  ) async {
-    final segmentUris = <Uri>[];
-    for (final line in playlist.split('\n')) {
-      final trimmed = line.trim();
-      if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
-      segmentUris.add(playlistUri.resolve(trimmed));
-      if (segmentUris.length >= 80) break;
-    }
-    if (segmentUris.isEmpty) return WebVTTCaptionFile('WEBVTT\n\n');
-    final buffer = StringBuffer('WEBVTT\n\n');
-    for (final uri in segmentUris) {
-      final response = await Dio().get<String>(
-        uri.toString(),
-        options: Options(
-          responseType: ResponseType.plain,
-          headers: _normalizedHeaders(_activePayload?.headers),
-          followRedirects: true,
-          receiveTimeout: const Duration(seconds: 10),
-          sendTimeout: const Duration(seconds: 8),
-        ),
-      );
-      final body = _normalizeSubtitleContents(response.data ?? '');
-      final lines = body
-          .split('\n')
-          .where(
-            (line) =>
-                !line.trimLeft().startsWith('WEBVTT') &&
-                !line.trimLeft().startsWith('X-TIMESTAMP-MAP'),
-          )
-          .join('\n')
-          .trim();
-      if (lines.isNotEmpty) {
-        buffer
-          ..writeln(lines)
-          ..writeln();
-      }
-    }
-    return WebVTTCaptionFile(buffer.toString());
-  }
 }
 
 class _AspectVideo extends StatelessWidget {
-  const _AspectVideo({required this.controller, required this.mode});
+  const _AspectVideo({
+    super.key,
+    required this.source,
+    required this.mode,
+    required this.onViewCreated,
+  });
 
-  final VideoPlayerController controller;
+  final _NativePlayerSource source;
   final _PlayerAspectMode mode;
+  final ValueChanged<int> onViewCreated;
 
   @override
   Widget build(BuildContext context) {
-    final value = controller.value;
-    final aspectRatio = value.aspectRatio == 0 ? 16 / 9 : value.aspectRatio;
-    if (mode == _PlayerAspectMode.fit || mode == _PlayerAspectMode.original) {
-      return Center(
-        child: AspectRatio(
-          aspectRatio: aspectRatio,
-          child: VideoPlayer(controller),
-        ),
-      );
-    }
     return SizedBox.expand(
-      child: FittedBox(
-        fit: mode.boxFit,
-        clipBehavior: Clip.hardEdge,
-        child: SizedBox(
-          width: aspectRatio * 1000,
-          height: 1000,
-          child: VideoPlayer(controller),
+      child: ColoredBox(
+        color: Colors.black,
+        child: defaultTargetPlatform == TargetPlatform.android
+            ? PlatformViewLink(
+                viewType: 'tv.wena.app/exo_player_view',
+                surfaceFactory: (context, controller) {
+                  return AndroidViewSurface(
+                    controller: controller as AndroidViewController,
+                    gestureRecognizers: const <
+                      Factory<OneSequenceGestureRecognizer>
+                    >{},
+                    hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+                  );
+                },
+                onCreatePlatformView: (params) {
+                  return PlatformViewsService.initSurfaceAndroidView(
+                    id: params.id,
+                    viewType: 'tv.wena.app/exo_player_view',
+                    layoutDirection: TextDirection.ltr,
+                    creationParams: source.toCreationParams(),
+                    creationParamsCodec: const StandardMessageCodec(),
+                    onFocus: () {
+                      params.onFocusChanged(true);
+                    },
+                  )
+                    ..addOnPlatformViewCreatedListener(
+                      params.onPlatformViewCreated,
+                    )
+                    ..addOnPlatformViewCreatedListener(onViewCreated)
+                    ..create();
+                },
+              )
+            : const Center(
+                child: Text(
+                  'Playback is available on Android TV.',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
         ),
-      ),
     );
   }
 }
@@ -2723,6 +2797,21 @@ class _SimplePlayerOption {
   final String subtitle;
 }
 
+class _SubtitleOption {
+  _SubtitleOption.embedded(_NativeSubtitleTrack track)
+    : external = null,
+      embedded = track,
+      id = track.id,
+      title = _subtitleTrackTitle(track, 0),
+      subtitle = _subtitleTrackSubtitle(track, 0);
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final _NativeSubtitleTrack? embedded;
+  final PlayerSubtitlePayload? external;
+}
+
 enum _PlayerAspectMode {
   fit('Fit', 'Show the full video without cropping.', BoxFit.contain),
   fill('Fill', 'Fill the TV screen and crop edges if needed.', BoxFit.cover),
@@ -2736,7 +2825,8 @@ enum _PlayerAspectMode {
   final BoxFit boxFit;
 }
 
-String _audioTrackTitle(VideoAudioTrack track, int index) {
+String _audioTrackTitle(_NativeAudioTrack track, int index) {
+  if (track.id == 'auto') return 'Auto';
   final language = _friendlyLanguage(track.language);
   final title = _cleanTrackText(track.label);
   if (language.isNotEmpty && title.isNotEmpty && language != title) {
@@ -2748,14 +2838,38 @@ String _audioTrackTitle(VideoAudioTrack track, int index) {
   return channels.isEmpty ? 'Audio ${index + 1}' : channels;
 }
 
-String _audioTrackSubtitle(VideoAudioTrack track, int index) {
+String _audioTrackSubtitle(_NativeAudioTrack track, int index) {
+  if (track.id == 'auto') return 'Use the stream default audio track.';
   final parts = <String>[
-    if ((track.codec ?? '').isNotEmpty) track.codec!.toUpperCase(),
+    if (track.codec.isNotEmpty) track.codec.toUpperCase(),
     if (_channelLabel(track).isNotEmpty) _channelLabel(track),
-    if (track.bitrate != null) '${(track.bitrate! / 1000).round()} kbps',
-    if (track.sampleRate != null) '${(track.sampleRate! / 1000).round()} kHz',
+    if (track.bitrate != null && track.bitrate! > 0)
+      '${(track.bitrate! / 1000).round()} kbps',
+    if (track.sampleRate != null && track.sampleRate! > 0)
+      '${(track.sampleRate! / 1000).round()} kHz',
   ];
   return parts.join(' | ');
+}
+
+String _subtitleTrackTitle(_NativeSubtitleTrack track, int index) {
+  if (track.id == 'auto') return 'Auto';
+  final language = _friendlyLanguage(track.language);
+  final title = _cleanTrackText(track.label);
+  if (language.isNotEmpty && title.isNotEmpty && language != title) {
+    return '$language - $title';
+  }
+  if (language.isNotEmpty) return language;
+  if (title.isNotEmpty) return title;
+  return 'Subtitle ${index + 1}';
+}
+
+String _subtitleTrackSubtitle(_NativeSubtitleTrack track, int index) {
+  if (track.id == 'auto') return 'Use the stream default subtitle track.';
+  final parts = <String>[
+    if (track.mimeType.isNotEmpty) track.mimeType,
+    if (track.language.isNotEmpty) _friendlyLanguage(track.language),
+  ].where((part) => part.isNotEmpty).toList();
+  return parts.isEmpty ? 'Embedded subtitle track' : parts.join(' | ');
 }
 
 String _qualityStreamTitle(PlayerResolvedStream stream) {
@@ -2887,8 +3001,8 @@ List<PlayerEpisodePayload> _episodesForSeason(
       : const [];
 }
 
-VideoAudioTrack? _preferredAudioTrack(
-  List<VideoAudioTrack> tracks,
+_NativeAudioTrack? _preferredAudioTrack(
+  List<_NativeAudioTrack> tracks,
   String language,
 ) {
   final wanted = language.trim().toLowerCase();
@@ -2898,10 +3012,10 @@ VideoAudioTrack? _preferredAudioTrack(
   return null;
 }
 
-bool _trackMatchesLanguage(VideoAudioTrack track, String wanted) {
+bool _trackMatchesLanguage(_NativeAudioTrack track, String wanted) {
   if (wanted.isEmpty || wanted == 'auto') return false;
-  final language = (track.language ?? '').trim().toLowerCase();
-  final label = (track.label ?? '').trim().toLowerCase();
+  final language = track.language.trim().toLowerCase();
+  final label = track.label.trim().toLowerCase();
   final aliases = switch (wanted) {
     'english' => const ['en', 'eng', 'english'],
     'hindi' => const ['hi', 'hin', 'hindi'],
@@ -2917,9 +3031,12 @@ bool _trackMatchesLanguage(VideoAudioTrack track, String wanted) {
   );
 }
 
-bool _subtitleMatchesLanguage(PlayerSubtitlePayload track, String language) {
+bool _subtitleOptionMatchesLanguage(_SubtitleOption track, String language) {
   final wanted = language.trim().toLowerCase();
-  final value = '${track.language ?? ''} ${track.label}'.toLowerCase();
+  if (wanted.isEmpty || wanted == 'auto') return false;
+  final value =
+      '${track.external?.language ?? track.embedded?.language ?? ''} ${track.external?.label ?? track.embedded?.label ?? ''}'
+          .toLowerCase();
   final aliases = switch (wanted) {
     'english' => const ['en', 'eng', 'english'],
     'hindi' => const ['hi', 'hin', 'hindi'],
@@ -2927,13 +3044,7 @@ bool _subtitleMatchesLanguage(PlayerSubtitlePayload track, String language) {
     'french' => const ['fr', 'fre', 'fra', 'french'],
     _ => [wanted],
   };
-  return aliases.any(
-    (alias) =>
-        value.contains(' $alias ') ||
-        value.startsWith('$alias ') ||
-        value.endsWith(' $alias') ||
-        value == alias,
-  );
+  return aliases.any((alias) => value.contains(alias));
 }
 
 String _subtitleTitle(PlayerSubtitlePayload track) {
@@ -2945,32 +3056,6 @@ String _subtitleTitle(PlayerSubtitlePayload track) {
   if (language.isNotEmpty) return language;
   if (label.isNotEmpty) return label;
   return 'Subtitle';
-}
-
-String _subtitleSubtitle(PlayerSubtitlePayload track) {
-  final parts = <String>[
-    if (_friendlyLanguage(track.language).isNotEmpty)
-      _friendlyLanguage(track.language),
-    _subtitleFormat(track.url),
-  ].where((part) => part.isNotEmpty).toList();
-  return parts.isEmpty ? 'External subtitle file' : parts.join(' | ');
-}
-
-String _subtitleFormat(String url) {
-  final path = Uri.tryParse(url)?.path.toLowerCase() ?? url.toLowerCase();
-  if (path.endsWith('.vtt')) return 'WebVTT';
-  if (path.endsWith('.srt')) return 'SRT';
-  if (path.endsWith('.ass')) return 'ASS';
-  if (path.endsWith('.ssa')) return 'SSA';
-  return 'Subtitle';
-}
-
-String _normalizeSubtitleContents(String contents) {
-  final trimmed = contents.trimLeft();
-  if (trimmed.startsWith('\uFEFFWEBVTT')) {
-    return trimmed.replaceFirst('\uFEFF', '');
-  }
-  return contents.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
 }
 
 Map<String, String> _parseHlsAttributes(String value) {
@@ -3025,7 +3110,7 @@ String _cleanTrackText(String? value) {
       .trim();
 }
 
-String _channelLabel(VideoAudioTrack track) {
+String _channelLabel(_NativeAudioTrack track) {
   final count = track.channelCount;
   if (count == 6) return '5.1';
   if (count == 8) return '7.1';

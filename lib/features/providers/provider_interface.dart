@@ -93,11 +93,13 @@ class SubtitleTrack {
     required this.label,
     required this.language,
     required this.url,
+    this.format,
   });
 
   final String label;
   final String language;
   final String url;
+  final String? format;
 }
 
 class AudioTrack {

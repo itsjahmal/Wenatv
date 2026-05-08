@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'core/router/app_router.dart';
 import 'core/startup/app_bootstrap.dart';
@@ -17,6 +18,7 @@ import 'features/tv/native_tv_integration_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   final bootstrapCompleter = Completer<void>();
 
   unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));

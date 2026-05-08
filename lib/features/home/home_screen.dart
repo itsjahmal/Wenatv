@@ -1,11 +1,12 @@
 import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:youtube_player_flutter/youtube_player_flutter.dart';
+import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 
 import '../../core/config/api_config.dart';
 import '../../core/theme/app_theme.dart';
@@ -27,6 +28,10 @@ final _heroTrailerKeyProvider =
 
 final _continuePosterProvider =
     FutureProvider.family<String?, ContinueWatchingEntry>((ref, entry) async {
+      // Fix 5: Use stored artworkUrl if available — avoid an unnecessary TMDB request.
+      if (entry.artworkUrl != null && entry.artworkUrl!.isNotEmpty) {
+        return entry.artworkUrl;
+      }
       final kind = entry.kind == 'tv' ? MediaKind.tv : MediaKind.movie;
       final details = await ref
           .watch(tmdbRepositoryProvider)
@@ -48,25 +53,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   late final ScrollController _scrollController;
   double _scrollOffset = 0;
   String? _lastPublishedChannelsKey;
+  bool _isOffline = false;
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
 
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController()..addListener(_onScroll);
+    _connectivitySubscription =
+        Connectivity().onConnectivityChanged.listen(_updateConnectivity);
+    Connectivity().checkConnectivity().then(_updateConnectivity);
+  }
+
+  void _updateConnectivity(List<ConnectivityResult> results) {
+    if (!mounted) return;
+    final isOffline =
+        results.isEmpty || results.every((r) => r == ConnectivityResult.none);
+    if (_isOffline != isOffline) {
+      setState(() => _isOffline = isOffline);
+    }
   }
 
   @override
   void dispose() {
+    _connectivitySubscription.cancel();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
   }
 
   void _onScroll() {
+    // Fix 1: Increase threshold to 8px — reduces setState frequency by ~4x
+    // during scrolling, preventing constant hero-overlay rebuilds.
     final offset = _scrollController.hasClients
         ? _scrollController.offset
         : 0.0;
-    if ((offset - _scrollOffset).abs() < 2) return;
+    if ((offset - _scrollOffset).abs() < 8) return;
     setState(() => _scrollOffset = offset);
   }
 
@@ -141,13 +163,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         children: [
                           const _HomePlainBackground(),
                           if (isHomeSection && hero != null)
-                            _HeroBackdrop(
-                              item: hero,
-                              heroHeight: _homeHeroHeight(viewportSize),
+                            RepaintBoundary(
+                              child: _HeroBackdrop(
+                                item: hero,
+                                heroHeight: _homeHeroHeight(viewportSize),
+                              ),
                             ),
                           CustomScrollView(
                             controller: _scrollController,
-                            cacheExtent: 900,
+                            // Fix 9: Larger cache so cards above/below viewport
+                            // are pre-rendered, preventing jank on TV D-pad nav.
+                            cacheExtent: 1400,
                             slivers: [
                               SliverToBoxAdapter(
                                 child: SizedBox(
@@ -198,6 +224,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               right: contentInset,
                               child: const _HomeUpdatingBadge(),
                             ),
+                          if (_isOffline)
+                            const Positioned(
+                              top: 24,
+                              left: 0,
+                              right: 0,
+                              child: _OfflineBanner(),
+                            ),
                         ],
                       );
                     },
@@ -242,6 +275,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         continueWatching: continueWatching,
         homeRows: rows,
         watchlist: watchlist,
+      ),
+    );
+  }
+}
+
+class _OfflineBanner extends StatelessWidget {
+  const _OfflineBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: WenaTheme.red,
+          borderRadius: BorderRadius.circular(999),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: .4),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.wifi_off, color: Colors.white, size: 16),
+            SizedBox(width: 8),
+            Text(
+              'No Internet Connection',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -400,63 +472,68 @@ class _HeroTrailerPreview extends StatefulWidget {
 }
 
 class _HeroTrailerPreviewState extends State<_HeroTrailerPreview> {
-  late YoutubePlayerController _controller;
+  YoutubePlayerController? _controller;
   bool _ready = false;
+  // Delay instantiating the YouTube WebView by 8 seconds so the home
+  // screen can fully settle (images, rows, focus) before adding the expensive
+  // embedded player to the tree. On low-end TV hardware this eliminates the
+  // most common startup hang.
+  bool _timerFired = false;
+  Timer? _startTimer;
 
   @override
   void initState() {
     super.initState();
-    _controller = _createController(widget.videoId);
+    _startTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted) return;
+      final controller = _createController(widget.videoId);
+      setState(() {
+        _timerFired = true;
+        _controller = controller;
+      });
+    });
   }
 
   @override
   void didUpdateWidget(covariant _HeroTrailerPreview oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!_timerFired || _controller == null) return;
     if (oldWidget.videoId == widget.videoId) return;
-    _controller.dispose();
+    _controller!.close();
     _ready = false;
     _controller = _createController(widget.videoId);
   }
 
   YoutubePlayerController _createController(String videoId) {
-    return YoutubePlayerController(
-      initialVideoId: videoId,
-      flags: const YoutubePlayerFlags(
-        autoPlay: true,
+    return YoutubePlayerController.fromVideoId(
+      videoId: videoId,
+      autoPlay: true,
+      params: const YoutubePlayerParams(
         mute: true,
         loop: true,
-        hideControls: true,
-        controlsVisibleAtStart: false,
-        disableDragSeek: true,
-        enableCaption: false,
-        forceHD: false,
+        showControls: false,
+        showFullscreenButton: false,
+        strictRelatedVideos: true,
       ),
-    )..addListener(_onPlayerChanged);
-  }
-
-  void _onPlayerChanged() {
-    final value = _controller.value;
-    if (!_ready && value.isReady && mounted) {
-      setState(() => _ready = true);
-      _controller.mute();
-      _controller.play();
-    }
-    if (value.playerState == PlayerState.ended) {
-      _controller.seekTo(Duration.zero);
-      _controller.play();
-    }
+    )..listen((event) {
+        if (!mounted) return;
+        if (!_ready && event.playerState == PlayerState.playing) {
+          setState(() => _ready = true);
+        }
+      });
   }
 
   @override
   void dispose() {
-    _controller.removeListener(_onPlayerChanged);
-    _controller.pause();
-    _controller.dispose();
+    _startTimer?.cancel();
+    _controller?.close();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Don't build any WebView until the timer has fired
+    if (!_timerFired || _controller == null) return const SizedBox.shrink();
     return IgnorePointer(
       child: AnimatedOpacity(
         opacity: _ready ? .88 : 0,
@@ -474,11 +551,9 @@ class _HeroTrailerPreviewState extends State<_HeroTrailerPreview> {
               child: SizedBox(
                 width: videoWidth,
                 height: videoHeight,
-                child: YoutubePlayer(
-                  controller: _controller,
-                  showVideoProgressIndicator: false,
-                  topActions: const [],
-                  bottomActions: const [],
+                child: YoutubePlayerScaffold(
+                  controller: _controller!,
+                  builder: (context, player) => player,
                 ),
               ),
             );
@@ -950,7 +1025,9 @@ class _ContentRow extends StatelessWidget {
             height: rowHeight,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              cacheExtent: 700,
+              // Fix 9: Higher cacheExtent pre-renders off-screen cards so
+              // fast D-pad navigation is jank-free on TV.
+              cacheExtent: 1200,
               itemCount: row.items.length,
               separatorBuilder: (_, __) => const SizedBox(width: AppSpacing.sm),
               itemBuilder: (context, index) {

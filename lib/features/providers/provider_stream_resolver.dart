@@ -232,10 +232,13 @@ class ProviderStreamResolver {
           final language = (item['language'] ?? item['lang'] ?? '').toString();
           final label = (item['label'] ?? item['title'] ?? item['name'] ?? '')
               .toString();
+          final format = (item['type'] ?? item['format'] ?? item['mime'] ?? '')
+              .toString();
           return SubtitleTrack(
             label: label.isEmpty ? language : label,
             language: language,
             url: (url ?? '').toString(),
+            format: format.isEmpty ? null : format,
           );
         })
         .where((track) => track.url.isNotEmpty)

@@ -26,7 +26,9 @@ final homeRowsProvider =
 
 class HomeRowsController extends Notifier<AsyncValue<List<HomeRow>>> {
   static const _boxKey = 'home_content_cache';
+  static const _minRefreshInterval = Duration(minutes: 5);
   String? _activeCacheKey;
+  DateTime? _lastRefreshed;
 
   @override
   AsyncValue<List<HomeRow>> build() {
@@ -44,6 +46,13 @@ class HomeRowsController extends Notifier<AsyncValue<List<HomeRow>>> {
       state = const AsyncData([]);
       return;
     }
+    // Guard: skip if a refresh ran less than 5 minutes ago to avoid
+    // redundant fetches every time the user navigates back to home.
+    final now = DateTime.now();
+    if (_lastRefreshed != null &&
+        now.difference(_lastRefreshed!) < _minRefreshInterval) {
+      return;
+    }
 
     final hadData = state.asData?.value.isNotEmpty == true;
     if (!hadData) state = const AsyncLoading();
@@ -57,6 +66,7 @@ class HomeRowsController extends Notifier<AsyncValue<List<HomeRow>>> {
       if (_activeCacheKey != cacheKey) return;
       final cleanRows = _dedupeRows(rows);
       if (cleanRows.isNotEmpty) {
+        _lastRefreshed = DateTime.now();
         state = AsyncData(cleanRows);
         await _saveCachedRows(cacheKey, cleanRows);
       } else if (!hadData) {
@@ -118,23 +128,34 @@ Future<List<HomeRow>> _rowsForProvider({
         .getCatalog(sourceUrl: sourceUrl, providerValue: providerValue)
         .timeout(const Duration(seconds: 8));
     final visibleCatalogs = _homeCatalogs(catalogs);
-    final rows = await Future.wait([
-      for (final catalog in visibleCatalogs)
-        _safeRow(catalog.title, () async {
-          final posts = await bridge
-              .getPosts(
-                sourceUrl: sourceUrl,
-                providerValue: providerValue,
-                filter: catalog.filter,
-              )
-              .timeout(const Duration(seconds: 12));
-          final enriched = await Future.wait([
-            for (final post in posts.take(14))
-              _enrichPost(tmdb, post, sourceUrl, providerValue, providerName),
-          ]);
-          return enriched.nonNulls.toList();
-        }),
-    ]);
+
+    // Fix 2: Process catalogs in batches of 4 instead of all-at-once.
+    // Firing 10+ simultaneous HTTP fetches on Android TV’s weaker network
+    // stack caused hangs. Batching limits concurrency while keeping total
+    // load time acceptable.
+    final rows = <HomeRow?>[];
+    for (final batch in _batched(visibleCatalogs, 4)) {
+      final batchResults = await Future.wait([
+        for (final catalog in batch)
+          _safeRow(catalog.title, () async {
+            final posts = await bridge
+                .getPosts(
+                  sourceUrl: sourceUrl,
+                  providerValue: providerValue,
+                  filter: catalog.filter,
+                )
+                .timeout(const Duration(seconds: 12));
+            // Cap enrichment at 8 posts (was 14) to halve TMDB calls.
+            final enriched = await Future.wait([
+              for (final post in posts.take(8))
+                _enrichPost(tmdb, post, sourceUrl, providerValue, providerName),
+            ]);
+            return enriched.nonNulls.toList();
+          }),
+      ]);
+      rows.addAll(batchResults);
+    }
+
     final providerRows = rows.nonNulls
         .where((row) => row.items.isNotEmpty)
         .fold<List<HomeRow>>([], (unique, row) {
@@ -167,6 +188,15 @@ Future<List<HomeRow>> _rowsForProvider({
       existing: const [],
     );
   }
+}
+
+/// Splits [items] into successive sublists of at most [size] elements.
+List<List<T>> _batched<T>(List<T> items, int size) {
+  final result = <List<T>>[];
+  for (var i = 0; i < items.length; i += size) {
+    result.add(items.sublist(i, (i + size).clamp(0, items.length)));
+  }
+  return result;
 }
 
 Future<List<HomeRow>> _tmdbDiscoveryRows(
@@ -410,6 +440,18 @@ List<HomeRow>? _loadCachedRows(String? key) {
   try {
     final raw = Hive.box('wenatv_cache').get(_homeCacheKey(key));
     if (raw is! Map) return null;
+    // Fix 7: Enforce a 15-minute TTL on cached home rows. Without this, stale
+    // data from hours/days ago was served indefinitely while the app silently
+    // re-fetched in the background, leading to confusing double-redraws.
+    const cacheTtl = Duration(minutes: 15);
+    final timestampRaw = raw['timestamp']?.toString();
+    if (timestampRaw != null) {
+      final timestamp = DateTime.tryParse(timestampRaw);
+      if (timestamp != null &&
+          DateTime.now().difference(timestamp) > cacheTtl) {
+        return null; // Expired — force a fresh network fetch
+      }
+    }
     final rows = raw['rows'];
     if (rows is! List) return null;
     final parsed = [

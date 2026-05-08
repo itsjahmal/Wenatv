@@ -2356,6 +2356,7 @@ List<PlayerSubtitlePayload> _playerSubtitles(List<SubtitleTrack> subtitles) {
             : subtitles[i].label,
         language: subtitles[i].language,
         url: subtitles[i].url,
+        format: subtitles[i].format,
       ),
   ];
 }

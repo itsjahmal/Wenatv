@@ -15,6 +15,29 @@ class TmdbRepository {
   final Dio _dio;
   final Box _cache;
 
+  // ── Cache TTL helpers ────────────────────────────────────────────────────
+  static const _listTtl = Duration(hours: 6);
+  static const _detailTtl = Duration(hours: 24);
+
+  /// Returns [value] only when the associated timestamp is fresher than [ttl].
+  /// The cache entry is expected to be a Map with keys 'ts' (ISO-8601 String)
+  /// and 'data' (the actual payload). Legacy bare entries (List/Map without 'ts')
+  /// are treated as expired so they get refreshed on next launch.
+  Object? _fresh(String key, Duration ttl) {
+    final raw = _cache.get(key);
+    if (raw is Map && raw.containsKey('ts')) {
+      final ts = DateTime.tryParse(raw['ts']?.toString() ?? '');
+      if (ts != null && DateTime.now().difference(ts) < ttl) {
+        return raw['data'];
+      }
+      return null; // Expired
+    }
+    return null; // Legacy bare entry — treat as expired
+  }
+
+  Future<void> _put(String key, Object data) =>
+      _cache.put(key, {'ts': DateTime.now().toIso8601String(), 'data': data});
+
   Future<List<MediaItem>> trending(MediaKind kind) {
     final path = kind == MediaKind.movie
         ? '/trending/movie/week'
@@ -77,13 +100,13 @@ class TmdbRepository {
   Future<MediaItem> details(int id, MediaKind kind) async {
     final path = kind == MediaKind.movie ? '/movie/$id' : '/tv/$id';
     final key = 'details_${kind.name}_$id';
-    final cached = _cache.get(key);
+    final cached = _fresh(key, _detailTtl);
     if (cached is Map) {
       return MediaItem.fromJson(Map<String, dynamic>.from(cached), kind);
     }
     final response = await _dio.get<Map<String, dynamic>>(path);
     final data = response.data ?? {};
-    await _cache.put(key, data);
+    await _put(key, data);
     return MediaItem.fromJson(data, kind);
   }
 
@@ -96,7 +119,7 @@ class TmdbRepository {
 
   Future<List<CastMember>> cast(int id, MediaKind kind) async {
     final key = 'cast_${kind.name}_$id';
-    final cached = _cache.get(key);
+    final cached = _fresh(key, _detailTtl);
     if (cached is List && cached.isNotEmpty) {
       return cached
           .map((item) => CastMember.fromJson(Map<String, dynamic>.from(item)))
@@ -112,7 +135,7 @@ class TmdbRepository {
         .where((item) => (item['name'] ?? '').toString().isNotEmpty)
         .take(12)
         .toList();
-    await _cache.put(key, cast);
+    await _put(key, cast);
     return cast.map(CastMember.fromJson).toList();
   }
 
@@ -140,7 +163,7 @@ class TmdbRepository {
 
   Future<Uri?> trailerUri(int id, MediaKind kind) async {
     final key = 'trailer_${kind.name}_$id';
-    final cached = _cache.get(key);
+    final cached = _fresh(key, _detailTtl);
     if (cached is String && cached.isNotEmpty) return Uri.tryParse(cached);
     final path = kind == MediaKind.movie
         ? '/movie/$id/videos'
@@ -154,7 +177,7 @@ class TmdbRepository {
     final keyValue = trailer['key']?.toString();
     if (keyValue == null || keyValue.isEmpty) return null;
     final uri = Uri.parse('https://www.youtube.com/watch?v=$keyValue');
-    await _cache.put(key, uri.toString());
+    await _put(key, uri.toString());
     return uri;
   }
 
@@ -180,7 +203,7 @@ class TmdbRepository {
     String cacheKey, {
     Map<String, dynamic>? query,
   }) async {
-    final cached = _cache.get(cacheKey);
+    final cached = _fresh(cacheKey, _listTtl);
     if (cached is List && cached.isNotEmpty) {
       return cached
           .map(
@@ -198,7 +221,7 @@ class TmdbRepository {
         .map((item) => Map<String, dynamic>.from(item))
         .where((item) => item['media_type'] != 'person')
         .toList();
-    await _cache.put(cacheKey, results);
+    await _put(cacheKey, results);
     return results
         .map((item) => MediaItem.fromJson(item, kind))
         .where((item) => item.posterPath != null || item.backdropPath != null)

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models/provider_repository.dart';
@@ -503,30 +504,66 @@ class _ThemeSettingsPanel extends ConsumerWidget {
   }
 }
 
-class _AboutSettingsPanel extends StatelessWidget {
+class _AboutSettingsPanel extends StatefulWidget {
   const _AboutSettingsPanel();
 
   @override
+  State<_AboutSettingsPanel> createState() => _AboutSettingsPanelState();
+}
+
+class _AboutSettingsPanelState extends State<_AboutSettingsPanel> {
+  PackageInfo? _packageInfo;
+
+  @override
+  void initState() {
+    super.initState();
+    PackageInfo.fromPlatform().then((info) {
+      if (mounted) setState(() => _packageInfo = info);
+    });
+  }
+
+  String _getReleaseChannel(String version) {
+    final parts = version.split('.');
+    if (parts.length >= 2) {
+      final minor = int.tryParse(parts[1]) ?? 0;
+      if (minor == 0) return 'Stable';
+      if (minor > 0 && minor <= 5) return 'Beta';
+    }
+    return '';
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return const _SettingsPanelShell(
+    return _SettingsPanelShell(
       icon: Icons.info_outline,
       title: 'About WenaTV',
       subtitle: 'App information and disclaimer.',
       children: [
-        _InfoSettingRow(title: 'App name', subtitle: 'WenaTV'),
-        _InfoSettingRow(title: 'Version', subtitle: '1.0.0'),
-        _InfoSettingRow(title: 'Build', subtitle: '1'),
         _InfoSettingRow(
+          title: 'App name',
+          subtitle: _packageInfo?.appName ?? 'WenaTV',
+        ),
+        _InfoSettingRow(
+          title: 'Version',
+          subtitle: _packageInfo != null
+              ? '${_packageInfo!.version} ${_getReleaseChannel(_packageInfo!.version)}'
+              : 'Loading...',
+        ),
+        _InfoSettingRow(
+          title: 'Build',
+          subtitle: _packageInfo?.buildNumber ?? 'Loading...',
+        ),
+        const _InfoSettingRow(
           title: 'Description',
           subtitle:
               'A cinematic Android TV streaming interface with TMDB metadata and user-managed content providers.',
         ),
-        _InfoSettingRow(
+        const _InfoSettingRow(
           title: 'Developer',
           subtitle: 'Made with love by Steven Collins',
         ),
-        _SupportDeveloperCard(),
-        _InfoSettingRow(
+        const _SupportDeveloperCard(),
+        const _InfoSettingRow(
           title: 'Disclaimer',
           subtitle:
               'Providers are user-managed. WenaTV does not bundle provider sources or host media streams.',

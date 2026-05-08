@@ -55,7 +55,7 @@ class _AnimatedSplashScreenState extends ConsumerState<AnimatedSplashScreen>
     try {
       await controller.initialize().timeout(const Duration(seconds: 4));
       await controller.setLooping(false);
-      await controller.setVolume(0);
+      await controller.setVolume(1.0);
       controller.addListener(_onVideoTick);
       if (!mounted || _videoController != controller) return;
       await controller.play();

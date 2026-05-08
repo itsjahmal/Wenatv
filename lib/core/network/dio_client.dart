@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:dio_smart_retry/dio_smart_retry.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/api_config.dart';
@@ -13,6 +14,19 @@ final dioProvider = Provider<Dio>((ref) {
         'Authorization': 'Bearer ${ApiConfig.tmdbReadAccessToken}',
         'accept': 'application/json',
       },
+    ),
+  );
+  dio.interceptors.add(
+    RetryInterceptor(
+      dio: dio,
+      retries: 2,
+      retryDelays: const [
+        Duration(milliseconds: 800),
+        Duration(seconds: 2),
+      ],
+      retryEvaluator: (error, attempt) =>
+          error.type != DioExceptionType.cancel &&
+          error.type != DioExceptionType.badResponse,
     ),
   );
   dio.interceptors.add(

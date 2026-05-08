@@ -1,8 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// ─── Signing: read from android/key.properties ────────────────────────────
+val keyPropsFile = rootProject.file("key.properties")
+val keyProps = Properties()
+if (keyPropsFile.exists()) {
+    keyPropsFile.inputStream().use { keyProps.load(it) }
 }
 
 android {
@@ -20,35 +29,37 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "tv.wena.app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        // Wena v2.1 Beta
+        versionCode = 3
+        versionName = "2.1"
+    }
+
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            output.outputFileName = "wena-v${variant.versionName}.apk"
+        }
     }
 
     signingConfigs {
         create("release") {
-            val storeFilePath = System.getenv("MYAPP_UPLOAD_STORE_FILE")
-            if (!storeFilePath.isNullOrBlank()) {
-                val candidate = file(storeFilePath)
-                storeFile = if (candidate.isAbsolute) {
-                    candidate
-                } else {
-                    rootProject.projectDir.parentFile.resolve(storeFilePath)
-                }
-            }
-            storePassword = System.getenv("MYAPP_UPLOAD_STORE_PASSWORD")
-            keyAlias = System.getenv("MYAPP_UPLOAD_KEY_ALIAS")
-            keyPassword = System.getenv("MYAPP_UPLOAD_KEY_PASSWORD")
+            val sf = keyProps.getProperty("storeFile") ?: ""
+            storeFile = if (sf.isNotBlank()) rootProject.file("app/$sf") else null
+            storePassword = keyProps.getProperty("storePassword") ?: ""
+            keyAlias = keyProps.getProperty("keyAlias") ?: ""
+            keyPassword = keyProps.getProperty("keyPassword") ?: ""
         }
     }
 
     buildTypes {
         release {
+            // Performance Fix 8: minification + resource shrinking for smaller APK
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -60,4 +71,9 @@ flutter {
 
 dependencies {
     implementation("androidx.tvprovider:tvprovider:1.0.0")
+    // Performance Fix 8: ExoPlayer upgraded 1.4.1 -> 1.6.0 for better TV buffering
+    implementation("androidx.media3:media3-exoplayer:1.6.0")
+    implementation("androidx.media3:media3-exoplayer-hls:1.6.0")
+    implementation("androidx.media3:media3-exoplayer-dash:1.6.0")
+    implementation("androidx.media3:media3-ui:1.6.0")
 }

@@ -57,12 +57,17 @@ class _FocusableCardState extends State<FocusableCard> {
       onFocusChange: (value) => setState(() => _focused = value),
       child: GestureDetector(
         onTap: widget.onPressed,
+        // Fix 4: Use a single AnimatedScale instead of AnimatedScale +
+        // AnimatedContainer running simultaneously. On a TV home screen with
+        // 140+ focusable cards, the double-animation was doubling GPU repaint
+        // work on every D-pad focus change. A plain DecoratedBox (no animation)
+        // for the border/shadow is cheaper and still looks great.
         child: AnimatedScale(
           scale: _focused ? widget.scale : 1,
-          duration: AppFocus.duration,
+          // 120ms feels snappier on TV remote than the default 200ms.
+          duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
-          child: AnimatedContainer(
-            duration: AppFocus.duration,
+          child: DecoratedBox(
             decoration: decoration,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(widget.borderRadius - 1),

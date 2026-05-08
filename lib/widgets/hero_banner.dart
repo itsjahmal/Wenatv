@@ -13,7 +13,7 @@ class HeroBanner extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        ?background,
+        if (background != null) background!,
         Container(
           decoration: const BoxDecoration(gradient: AppGradients.heroLeft),
         ),

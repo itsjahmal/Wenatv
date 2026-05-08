@@ -22,6 +22,13 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        flutterEngine
+            .platformViewsController
+            .registry
+            .registerViewFactory(
+                WenaExoPlayerViewFactory.viewType,
+                WenaExoPlayerViewFactory(flutterEngine.dartExecutor.binaryMessenger),
+            )
         pendingDeepLink = intent?.dataString
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { channel ->
             channel.setMethodCallHandler { call, result ->
